@@ -1,0 +1,47 @@
+Package: comptoxtools
+Title: Tools for the EPA CompTox Chemical Dashboard API
+Version: 0.1.0
+Authors@R:
+    person("First", "Last", email = "first.last@example.com", role = c("aut", "cre"))
+Description: Provides functions to search and retrieve chemical data from the
+    EPA CompTox Chemical Dashboard API, including chemical identity information
+    (DTXSID, CAS-RN, SMILES, preferred name), structural and physico-chemical
+    property data, and structure images. Also includes tools for ToxPrint
+    chemotype analysis (proportion calculations, per-chemical counts, and
+    enrichment analyses), UMAP dimensionality reduction and visualisation, and
+    a utility to recover CAS registry numbers that Excel has incorrectly
+    reformatted as dates.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Imports:
+    broom,
+    dplyr,
+    forcats,
+    furrr,
+    future,
+    ggplot2,
+    ggthemes,
+    glue,
+    here,
+    httr,
+    janitor,
+    jsonlite,
+    lubridate,
+    magick,
+    magrittr,
+    progressr,
+    purrr,
+    readr,
+    rlang,
+    scales,
+    stringr,
+    tibble,
+    tidyr,
+    tidyselect,
+    umap,
+    yardstick
+Depends: 
+    R (>= 3.5)
+LazyData: true
