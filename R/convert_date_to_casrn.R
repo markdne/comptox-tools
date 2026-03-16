@@ -17,11 +17,10 @@
 #'   casrn = c("3/1/2038", "100-00-5", "3/7/2680", "10/9/3546", "79-06-1"),
 #'   stringsAsFactors = FALSE
 #' )
-#' df$cas_numbers <- convert_date_to_casrn(df$cas_numbers)
+#' df$casrn <- convert_date_to_casrn(df$casrn)
 #'
 #' @importFrom lubridate mdy
 #' @importFrom stringr str_detect str_remove
-#' @import magrittr
 #'
 #' @export
 convert_date_to_casrn <- function(date_str) {
@@ -36,9 +35,9 @@ convert_date_to_casrn <- function(date_str) {
 
   # Convert only the strings that contain a forward slash
   if (any(contains_slash)) {
-    date_converted[contains_slash] <- date_str[contains_slash] %>%
-      lubridate::mdy() %>%
-      format("%Y-%m-%d") %>%
+    date_converted[contains_slash] <- date_str[contains_slash] |>
+      lubridate::mdy() |>
+      format("%Y-%m-%d") |>
       stringr::str_remove("(?<=-\\d{2}-)0")
   }
 

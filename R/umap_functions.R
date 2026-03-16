@@ -97,15 +97,16 @@ run_umap <- function(
 #'       and \code{source_col}. The label is joined to the layout tibble using
 #'       the row-identifier column.}
 #'   }
-#' @param rowname_name Character. Name to give the column that holds the row
-#'   names of the layout matrix. Default is \code{"identifier"}.
-#' @param join_by_col Character. When \code{source_info} is a data frame, the
-#'   column in \code{source_info} to match against the \code{rowname_name}
-#'   column of the layout tibble. Required when \code{source_info} is a data
-#'   frame.
-#' @param source_col Character. When \code{source_info} is a data frame, the
-#'   column whose values become the \code{dataset} label. Required when
+#' @param rowname_name <[`data-masked`][rlang::args_data_masking]> Unquoted
+#'   name to give the column that holds the row names of the layout matrix.
+#'   Default is \code{identifier}.
+#' @param join_by_col <[`data-masked`][rlang::args_data_masking]> Unquoted
+#'   name of the column in \code{source_info} to match against the
+#'   \code{rowname_name} column of the layout tibble. Required when
 #'   \code{source_info} is a data frame.
+#' @param source_col <[`data-masked`][rlang::args_data_masking]> Unquoted
+#'   name of the column in \code{source_info} whose values become the
+#'   \code{dataset} label. Required when \code{source_info} is a data frame.
 #'
 #' @return A [tibble][tibble::tibble] with columns:
 #'   \describe{
@@ -118,8 +119,8 @@ run_umap <- function(
 #'
 #' @export
 #' @importFrom tibble as_tibble add_column
-#' @importFrom dplyr left_join select rename_with all_of mutate
-#' @importFrom rlang enquo as_name set_names
+#' @importFrom dplyr left_join join_by select rename mutate
+#' @importFrom rlang enquo as_name as_label quo_is_null set_names
 #' @importFrom forcats as_factor
 #' @importFrom glue glue
 #'
@@ -133,14 +134,18 @@ umap_layout <- function(
     df,
     n_neighbours,
     source_info  = NULL,
-    rowname_name = "identifier",
+    rowname_name = identifier,
     join_by_col  = NULL,
     source_col   = NULL
 ) {
   # Capture the name of `df` before it is reassigned, so it can be used as a
   # fallback label when source_info is NULL
   original_df_name <- rlang::as_name(rlang::enquo(df))
-  
+
+  # rowname_name is used both as a bare column name ({{ }}) and as a character
+  # string (for as_tibble / set_names / add_column). Capture the string form once.
+  rowname_name_str <- rlang::as_label(rlang::enquo(rowname_name))
+
   # Extract the 2-D layout matrix
   if (is.list(df) && "layout" %in% names(df)) {
     layout_matrix <- df$layout
@@ -149,25 +154,25 @@ umap_layout <- function(
   } else {
     stop("`df` must be a umap object with a `layout` element or a numeric matrix.")
   }
-  
+
   if (ncol(layout_matrix) != 2L) {
     stop(glue::glue(
       "`df` layout must have exactly 2 columns but has {ncol(layout_matrix)}."
     ))
   }
-  
+
   # Convert to a tidy tibble with canonical column names.
   # Using set_names() avoids relying on the fragile auto-generated ...1 / ...2
   # names that as_tibble() produces when the matrix has no column names.
   df <- layout_matrix |>
-    tibble::as_tibble(rownames = rowname_name) |>
-    rlang::set_names(c(rowname_name, "dimension_1", "dimension_2")) |>
-    tibble::add_column(neighbours = n_neighbours, .after = rowname_name)
-  
+    tibble::as_tibble(rownames = rowname_name_str) |>
+    rlang::set_names(c(rowname_name_str, "dimension_1", "dimension_2")) |>
+    tibble::add_column(neighbours = n_neighbours, .after = rowname_name_str)
+
   # Attach the data-source label
   if (is.null(source_info)) {
     df <- tibble::add_column(df, dataset = original_df_name)
-    
+
   } else if (is.character(source_info) || is.factor(source_info)) {
     if (length(source_info) != nrow(df)) {
       stop(glue::glue(
@@ -176,27 +181,28 @@ umap_layout <- function(
       ))
     }
     df <- tibble::add_column(df, dataset = source_info)
-    
+
   } else if (is.data.frame(source_info)) {
-    if (is.null(source_col) || is.null(join_by_col)) {
+    if (rlang::quo_is_null(rlang::enquo(source_col)) ||
+        rlang::quo_is_null(rlang::enquo(join_by_col))) {
       stop(
         "When `source_info` is a data frame, both `join_by_col` and `source_col` ",
         "must be supplied."
       )
     }
-    source_info <- dplyr::select(source_info, dplyr::all_of(c(join_by_col, source_col)))
-    
+    source_info <- dplyr::select(source_info, {{ join_by_col }}, {{ source_col }})
+
     df <- df |>
       dplyr::left_join(
         source_info,
-        by = rlang::set_names(join_by_col, rowname_name)
+        by = dplyr::join_by({{ rowname_name }} == {{ join_by_col }})
       ) |>
-      dplyr::rename_with(~ "dataset", .cols = dplyr::all_of(source_col))
-    
+      dplyr::rename(dataset = {{ source_col }})
+
   } else {
     stop("`source_info` must be NULL, a character/factor vector, or a data frame.")
   }
-  
+
   dplyr::mutate(df, dataset = forcats::as_factor(dataset))
 }
 

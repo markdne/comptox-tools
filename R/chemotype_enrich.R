@@ -27,7 +27,8 @@
 #' @importFrom dplyr across all_of arrange bind_cols bind_rows case_when desc group_by mutate rename select
 #' @importFrom furrr future_map furrr_options
 #' @importFrom future multisession plan
-#' @importFrom janitor fisher.test remove_constant
+#' @importFrom janitor remove_constant
+#' @importFrom stats fisher.test
 #' @importFrom progressr progressor
 #' @importFrom purrr list_cbind map walk
 #' @importFrom stats p.adjust p.adjust.methods
@@ -172,9 +173,7 @@ chemotype_enrichment <- function(x, endpoint_of_interest,
         dplyr::select(-.estimator) |>
         tidyr::pivot_wider(names_from = .metric, values_from = .estimate)
       
-      # Fisher's exact test — janitor::fisher.test() dispatches to stats::fisher.test()
-      # for non-tabyl inputs (e.g. the matrix returned by conf_mat$table)
-      odds <- janitor::fisher.test(cm$table, alternative = alt_hypothesis) |>
+      odds <- stats::fisher.test(cm$table, alternative = alt_hypothesis) |>
         broom::tidy()
       
       p()  # advance progress bar
@@ -230,8 +229,10 @@ chemotype_enrichment <- function(x, endpoint_of_interest,
 #' @param hitcalls Tibble/dataframe with a chemical ID column and one column per assay containing hit calls (0/1).
 #' @param assays Character vector of assay column names to calculate enrichment for.
 #' @param toxprints Tibble/dataframe containing a chemical ID column and binary ToxPrint columns.
-#' @param id_col_hitcalls Name of the chemical ID column in `hitcalls`.
-#' @param id_col_toxprints Name of the chemical ID column in `toxprints`. Defaults to `id_col_hitcalls`.
+#' @param id_col_hitcalls <[`data-masked`][rlang::args_data_masking]> Unquoted name of the
+#'   chemical ID column in `hitcalls`.
+#' @param id_col_toxprints <[`data-masked`][rlang::args_data_masking]> Unquoted name of the
+#'   chemical ID column in `toxprints`. Defaults to `id_col_hitcalls`.
 #' @param endpoint_col_name Name of the column added to output identifying the assay. Default is "assay".
 #' @param workers Number of parallel workers to use for assay-level parallelism. Default is `1` (sequential).
 #'   Set to a value greater than 1 to enable parallel processing via `future::multisession`. Alternatively,
@@ -241,11 +242,12 @@ chemotype_enrichment <- function(x, endpoint_of_interest,
 #'
 #' @export
 #'
-#' @importFrom dplyr all_of bind_rows inner_join mutate select
+#' @importFrom dplyr all_of bind_rows inner_join join_by mutate select
 #' @importFrom furrr future_map furrr_options
 #' @importFrom future multisession plan
 #' @importFrom progressr progressor
 #' @importFrom purrr compact
+#' @importFrom rlang enquo
 #'
 
 multi_assay_enrichment <- function(hitcalls,
@@ -260,7 +262,12 @@ multi_assay_enrichment <- function(hitcalls,
   if (missing(id_col_hitcalls)) {
     stop("'id_col_hitcalls' is required. Please supply the name of the chemical ID column in 'hitcalls'.")
   }
-  
+
+  # Pre-capture quosures — {{ }} is unreliable inside furrr parallel lambdas
+  # because the promise chain may not survive serialisation to worker processes.
+  hc_quo <- rlang::enquo(id_col_hitcalls)
+  tp_quo <- if (missing(id_col_toxprints)) hc_quo else rlang::enquo(id_col_toxprints)
+
   # --- Parallelisation setup --------------------------------------------------
   
   if (workers > 1L) {
@@ -286,12 +293,12 @@ multi_assay_enrichment <- function(hitcalls,
       }
       
       result <- hitcalls |>
-        dplyr::select(dplyr::all_of(c(id_col_hitcalls, assay_i))) |>
+        dplyr::select(!!hc_quo, dplyr::all_of(assay_i)) |>
         dplyr::inner_join(
           toxprints,
-          by = stats::setNames(nm = id_col_hitcalls, id_col_toxprints)
+          by = dplyr::join_by(!!hc_quo == !!tp_quo)
         ) |>
-        dplyr::select(-dplyr::all_of(id_col_hitcalls)) |>
+        dplyr::select(-!!hc_quo) |>
         chemotype_enrichment(
           endpoint_of_interest = dplyr::all_of(assay_i),
           workers = 1L,  # prevent nested parallelism inside each worker
