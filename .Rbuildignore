@@ -1,0 +1,7 @@
+^Code$
+^data-raw$
+^\.claude$
+^\.git$
+^\.gitignore$
+^.*\.Rproj$
+^\.Rproj\.user$
