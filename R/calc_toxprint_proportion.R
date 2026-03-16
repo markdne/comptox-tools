@@ -61,10 +61,9 @@
 #' @export
 #'
 #' @importFrom dplyr summarise n_distinct filter pull mutate left_join join_by
-#'   distinct arrange desc if_else
+#'   distinct arrange desc if_else select
 #' @importFrom tidyr pivot_longer
-#' @importFrom tidyselect any_of all_of
-#' @importFrom rlang englue .data
+#' @importFrom tidyselect all_of
 #' @importFrom glue glue
 #' @importFrom progressr progressor
 calculate_toxprint_proportion <- function(
@@ -74,16 +73,12 @@ calculate_toxprint_proportion <- function(
     dataset_id_col = dataset,
     chem_id_col = CASRN,
     scale_to_dataset = NULL) {
-  
+
   p <- progressr::progressor(steps = 5)
-  
+
   # Convert level number into column name
   chemotype_level_col <- glue::glue("level_{toxprint_level}_full")
-  
-  # Capture tidy-eval column names as strings (needed for pivot_longer / join)
-  dataset_col_name <- rlang::englue("{{ dataset_id_col }}")
-  chem_col_name    <- rlang::englue("{{ chem_id_col }}")
-  
+
   # Validate that the requested level exists in tox_levels_data
   if (!(chemotype_level_col %in% colnames(tox_levels_data))) {
     stop(glue::glue(
@@ -92,7 +87,7 @@ calculate_toxprint_proportion <- function(
       "{paste(2:5, collapse = ', ')}."
     ))
   }
-  
+
   # Step 1 – Calculate per-dataset chemical counts
   p(message = "Calculating dataset sizes...")
   dataset_sizes <- toxprint_data |>
@@ -100,30 +95,30 @@ calculate_toxprint_proportion <- function(
       tot_chem = dplyr::n_distinct({{ chem_id_col }}),
       .by = {{ dataset_id_col }}
     )
-  
+
   # Step 2 – Compute scaling factors
   p(message = "Applying scaling factors...")
   if (!is.null(scale_to_dataset)) {
     ref_size <- dataset_sizes |>
       dplyr::filter({{ dataset_id_col }} == scale_to_dataset) |>
       dplyr::pull(tot_chem)
-    
+
     dataset_sizes <- dataset_sizes |>
       dplyr::mutate(scaling_factor = ref_size / tot_chem)
   } else {
     dataset_sizes <- dataset_sizes |>
       dplyr::mutate(scaling_factor = 1)
   }
-  
+
   # Step 3 – Pivot ToxPrint columns to long format
   p(message = "Pivoting ToxPrint data to long format...")
   toxprint_long <- toxprint_data |>
     tidyr::pivot_longer(
-      cols      = -tidyselect::any_of(c(dataset_col_name, chem_col_name)),
+      cols      = -c({{ dataset_id_col }}, {{ chem_id_col }}),
       names_to  = "toxprint",
       values_to = "presence"
     )
-  
+
   # Step 4 – Join hierarchy levels, aggregate to the chosen level, then join sizes
   p(message = "Joining ToxPrint hierarchy levels and counting...")
   toxprint_counts <- toxprint_long |>
@@ -135,12 +130,13 @@ calculate_toxprint_proportion <- function(
     ) |>
     dplyr::mutate(
       chem_count = dplyr::n_distinct(
-        dplyr::if_else(presence == 1, .data[[chem_col_name]], NA_character_)
+        dplyr::if_else(presence == 1, {{ chem_id_col }}, NA_character_),
+        na.rm = TRUE
       ),
       presence = max(presence),
       .by = c({{ dataset_id_col }}, tidyselect::all_of(chemotype_level_col))
     ) |>
-    dplyr::left_join(dataset_sizes, by = dataset_col_name) |>
+    dplyr::left_join(dataset_sizes, by = dplyr::join_by({{ dataset_id_col }})) |>
     dplyr::mutate(
       chem_count_scaled = chem_count * scaling_factor,
       freq              = round(chem_count / tot_chem, digits = 4)
@@ -149,7 +145,7 @@ calculate_toxprint_proportion <- function(
       tidyselect::all_of(chemotype_level_col), {{ dataset_id_col }},
       presence, chem_count, tot_chem, chem_count_scaled, freq
     )
-  
+
   # Step 5 – Sort and return
   p(message = "Finalising results...")
   toxprint_counts |>
@@ -209,10 +205,10 @@ calculate_toxprint_proportion <- function(
 #' @export
 #'
 #' @importFrom dplyr left_join join_by mutate n_distinct distinct arrange desc
-#'   if_else
+#'   if_else select
 #' @importFrom tidyr pivot_longer
-#' @importFrom tidyselect any_of all_of
-#' @importFrom rlang englue .data
+#' @importFrom tidyselect all_of
+#' @importFrom rlang .data
 #' @importFrom glue glue
 #' @importFrom progressr progressor
 calculate_toxprints_per_chem <- function(
@@ -221,16 +217,12 @@ calculate_toxprints_per_chem <- function(
     toxprint_level = 5,
     dataset_id_col = dataset,
     chem_id_col = CASRN) {
-  
+
   p <- progressr::progressor(steps = 4)
-  
+
   # Convert level number into column name
   chemotype_level_col <- glue::glue("level_{toxprint_level}_full")
-  
-  # Capture tidy-eval column names as strings
-  dataset_col_name <- rlang::englue("{{ dataset_id_col }}")
-  chem_col_name    <- rlang::englue("{{ chem_id_col }}")
-  
+
   # Validate that the requested level exists in tox_levels_data
   if (!(chemotype_level_col %in% colnames(tox_levels_data))) {
     stop(glue::glue(
@@ -239,16 +231,16 @@ calculate_toxprints_per_chem <- function(
       "{paste(2:5, collapse = ', ')}."
     ))
   }
-  
+
   # Step 1 – Pivot ToxPrint columns to long format
   p(message = "Pivoting ToxPrint data to long format...")
   toxprint_long <- toxprint_data |>
     tidyr::pivot_longer(
-      cols      = -tidyselect::any_of(c(dataset_col_name, chem_col_name)),
+      cols      = -c({{ dataset_id_col }}, {{ chem_id_col }}),
       names_to  = "toxprint",
       values_to = "presence"
     )
-  
+
   # Step 2 – Join hierarchy levels
   p(message = "Joining ToxPrint hierarchy levels...")
   toxprint_joined <- toxprint_long |>
@@ -258,13 +250,14 @@ calculate_toxprints_per_chem <- function(
                       tidyselect::all_of(chemotype_level_col)),
       by = dplyr::join_by(toxprint == toxprint_chemotype_name_original)
     )
-  
+
   # Step 3 – Count distinct level-name chemotypes per chemical
   p(message = "Counting chemotypes per chemical...")
   toxprints_per_chem <- toxprint_joined |>
     dplyr::mutate(
       num_toxprints = dplyr::n_distinct(
-        dplyr::if_else(presence == 1, .data[[chemotype_level_col]], NA_character_)
+        dplyr::if_else(presence == 1, .data[[chemotype_level_col]], NA_character_),
+        na.rm = TRUE
       ),
       .by = c({{ dataset_id_col }}, {{ chem_id_col }})
     ) |>
@@ -272,7 +265,7 @@ calculate_toxprints_per_chem <- function(
       {{ dataset_id_col }}, {{ chem_id_col }},
       tidyselect::all_of(chemotype_level_col), num_toxprints
     )
-  
+
   # Step 4 – Sort and return
   p(message = "Finalising results...")
   toxprints_per_chem |>
