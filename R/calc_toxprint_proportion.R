@@ -141,10 +141,11 @@ calculate_toxprint_proportion <- function(
       chem_count_scaled = chem_count * scaling_factor,
       freq              = round(chem_count / tot_chem, digits = 4)
     ) |>
-    dplyr::distinct(
+    dplyr::select(
       tidyselect::all_of(chemotype_level_col), {{ dataset_id_col }},
       presence, chem_count, tot_chem, chem_count_scaled, freq
-    )
+    ) |>
+    dplyr::distinct()
 
   # Step 5 – Sort and return
   p(message = "Finalising results...")
@@ -261,10 +262,11 @@ calculate_toxprints_per_chem <- function(
       ),
       .by = c({{ dataset_id_col }}, {{ chem_id_col }})
     ) |>
-    dplyr::distinct(
+    dplyr::select(
       {{ dataset_id_col }}, {{ chem_id_col }},
       tidyselect::all_of(chemotype_level_col), num_toxprints
-    )
+    ) |>
+    dplyr::distinct()
 
   # Step 4 – Sort and return
   p(message = "Finalising results...")
