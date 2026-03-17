@@ -120,7 +120,7 @@ run_umap <- function(
 #' @export
 #' @importFrom tibble as_tibble add_column
 #' @importFrom dplyr left_join join_by select rename mutate
-#' @importFrom rlang enquo as_name as_label quo_is_null set_names
+#' @importFrom rlang enquo as_name as_label quo_is_null
 #' @importFrom forcats as_factor
 #' @importFrom glue glue
 #'
@@ -161,12 +161,11 @@ umap_layout <- function(
     ))
   }
 
-  # Convert to a tidy tibble with canonical column names.
-  # Using set_names() avoids relying on the fragile auto-generated ...1 / ...2
-  # names that as_tibble() produces when the matrix has no column names.
+  # Assign column names before as_tibble() to avoid a tibble deprecation
+  # warning about non-unique column names on unnamed matrices.
+  colnames(layout_matrix) <- c("dimension_1", "dimension_2")
   df <- layout_matrix |>
     tibble::as_tibble(rownames = rowname_name_str) |>
-    rlang::set_names(c(rowname_name_str, "dimension_1", "dimension_2")) |>
     tibble::add_column(neighbours = n_neighbours, .after = rowname_name_str)
 
   # Attach the data-source label

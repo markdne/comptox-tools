@@ -11,6 +11,10 @@ toxprint_levels <- readr::read_csv(
   "data-raw/toxprint_V2.0_r711_5Levels.csv",
   show_col_types = FALSE
 ) |>
-  janitor::clean_names()
+  janitor::clean_names() |>
+  dplyr::rename(
+    toxprint_id                     = tox_print_id,
+    toxprint_chemotype_name_original = tox_print_chemotype_name_original
+  )
 
 usethis::use_data(toxprint_levels, overwrite = TRUE)
