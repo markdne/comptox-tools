@@ -1,20 +1,27 @@
 Package: comptoxtools
-Title: Tools for the EPA CompTox Chemical Dashboard API
+Title: CompTox Chemical Data Retrieval, ToxPrint Chemotype Analysis, and
+    UMAP Visualisation
 Version: 0.1.0
 Authors@R:
-    person("First", "Last", email = "first.last@example.com", role = c("aut", "cre"))
-Description: Provides functions to search and retrieve chemical data from the
-    EPA CompTox Chemical Dashboard API, including chemical identity information
-    (DTXSID, CAS-RN, SMILES, preferred name), structural and physico-chemical
-    property data, and structure images. Also includes tools for ToxPrint
-    chemotype analysis (proportion calculations, per-chemical counts, and
-    enrichment analyses), UMAP dimensionality reduction and visualisation, and
-    a utility to recover CAS registry numbers that Excel has incorrectly
-    reformatted as dates.
+    person("First", "Last", , "first.last@example.com", role = c("aut", "cre"))
+Description: A toolkit for cheminformatics workflows centred on the EPA
+    CompTox ecosystem. Provides functions to query the CompTox Chemical
+    Dashboard API for chemical identity (DTXSID, CAS-RN, SMILES, preferred
+    name), physico-chemical property data, and structure images. Includes
+    a suite of ToxPrint chemotype analysis tools: dataset-level proportion
+    calculations, per-chemical chemotype counts, and Fisher's exact test
+    enrichment analyses (with confusion-matrix metrics) for individual
+    chemotypes, pairwise or triplet combinations, and multiple assays in
+    parallel — all operating on the bundled ToxPrint v2.0 (r711) naming
+    hierarchy across five levels of specificity. Also provides a UMAP
+    dimensionality-reduction pipeline (projection, tidy layout, and
+    ggplot2 visualisation) and a utility to recover CAS registry numbers
+    that Excel has corrupted by auto-formatting them as dates. Parallel
+    execution is supported via 'furrr' and optional progress reporting via
+    'progressr'.
 License: MIT + file LICENSE
-Encoding: UTF-8
-Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.2
+Depends: 
+    R (>= 3.5)
 Imports:
     broom,
     dplyr,
@@ -40,6 +47,7 @@ Imports:
     tidyselect,
     umap,
     yardstick
-Depends: 
-    R (>= 3.5)
+Encoding: UTF-8
 LazyData: true
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
