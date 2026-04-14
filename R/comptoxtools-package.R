@@ -11,7 +11,7 @@
 #'     requests.}
 #'   \item{[deduplicate_chem_results()]}{Collapse duplicate rows when multiple
 #'     identifier columns resolve to the same chemical.}
-#'   \item{[get_struc_from_dtxsid()]}{Retrieve structural and physico-chemical
+#'   \item{[get_struc_from_id()]}{Retrieve structural and physico-chemical
 #'     property data using DTXSID or DTXCID identifiers.}
 #'   \item{[get_structure_image()]}{Fetch PNG or SVG structure images by
 #'     DTXSID, DTXCID, or GSID.}
@@ -58,7 +58,7 @@
 #'
 #' @section API key:
 #' CompTox API functions require a Dashboard API key. Register for one at
-#' \url{https://comptox.epa.gov/dashboard/}.
+#' \url{https://www.epa.gov/comptox-tools/computational-toxicology-and-exposure-apis}.
 #'
 #' @section Parallel execution and progress bars:
 #' Functions use [furrr::future_map()] for parallel requests. Call

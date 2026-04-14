@@ -9,11 +9,11 @@
 #'   identifiers.
 #' @param search_type Character. The identifier type to search by. One of
 #'   \code{"dtxsid"} (default) or \code{"dtxcid"}.
-#'   See \url{https://api-ccte.epa.gov/docs/chemical.html} for details.
+#'   See \url{https://comptox.epa.gov/ctx-api/docs/chemical.html} for details.
 #' @param results_type Character. The projection (set of fields) to return.
 #'   One of \code{"structure"} (default), \code{"standard"},
 #'   \code{"comptox_chem_details"}, \code{"chem_identifiers"}, or \code{"all"}.
-#'   See \url{https://api-ccte.epa.gov/docs/chemical.html} for details.
+#'   See \url{https://comptox.epa.gov/ctx-api/docs/chemical.html} for details.
 #' @param api_key Character. Your CompTox Dashboard API key.
 #' @param chem_id_col <[`tidy-select`][dplyr::dplyr_tidy_select]> The column
 #'   in \code{input_data} that contains chemical identifiers. Required when
@@ -46,7 +46,7 @@
 #' )
 #'
 #' # Retrieve structure information using DTXSIDs
-#' results <- get_struc_from_dtxsid(
+#' results <- get_struc_from_id(
 #'   input_data  = df,
 #'   search_type = "dtxsid",
 #'   api_key     = "your_api_key_here",
@@ -55,7 +55,7 @@
 #'
 #' # Retrieve all available fields with a progress bar
 #' results <- progressr::with_progress({
-#'   get_struc_from_dtxsid(
+#'   get_struc_from_id(
 #'     input_data   = df,
 #'     search_type  = "dtxsid",
 #'     results_type = "all",
@@ -64,7 +64,7 @@
 #'   )
 #' })
 #' }
-get_struc_from_dtxsid <- function(
+get_struc_from_id <- function(
     input_data,
     search_type  = c("dtxsid", "dtxcid"),
     results_type = c("structure", "standard", "comptox_chem_details", "chem_identifiers", "all"),
@@ -73,31 +73,31 @@ get_struc_from_dtxsid <- function(
     chunk_size   = 1000L,
     sorted       = TRUE
 ) {
-  
+
   ## Input validation -----------------------------------------------------------
-  
+
   if (missing(api_key)) stop("Please provide your API key via `api_key`.")
-  
+
   if (!is.data.frame(input_data) && !is.atomic(input_data))
     stop("`input_data` must be a data frame/tibble or an atomic vector.")
-  
+
   search_type  <- match.arg(search_type)
   results_type <- match.arg(results_type)
-  
+
   chunk_size <- as.integer(chunk_size)
   if (is.na(chunk_size) || chunk_size < 1L || chunk_size > 1000L)
     stop("`chunk_size` must be an integer between 1 and 1000.")
-  
+
   ## API setup ------------------------------------------------------------------
-  
+
   base_url <- "https://comptox.epa.gov/ctx-api"
-  
+
   url_search <- switch(
     search_type,
     dtxsid = "/chemical/detail/search/by-dtxsid",
     dtxcid = "/chemical/detail/search/by-dtxcid"
   )
-  
+
   results_params <- switch(
     results_type,
     structure            = "chemicalstructure",
@@ -106,17 +106,17 @@ get_struc_from_dtxsid <- function(
     chem_identifiers     = "chemicalidentifier",
     all                  = "chemicaldetailall"
   )
-  
+
   api_headers <- httr::add_headers(
     "x-api-key"    = api_key,
     "Content-Type" = "application/json"
   )
-  
+
   # Column in the response used to match results back to input identifiers
   key_col <- switch(search_type, dtxsid = "dtxsid", dtxcid = "dtxcid")
-  
+
   ## Preferred column order -----------------------------------------------------
-  
+
   col_order <- c(
     "input_term",
     "dtxsid", "dtxcid", "casrn", "preferredName",
@@ -144,9 +144,9 @@ get_struc_from_dtxsid <- function(
     "relatedSubstanceCount", "stereo",
     "error"
   )
-  
+
   ## Extract and deduplicate identifiers ----------------------------------------
-  
+
   chem_ids <- if (is.data.frame(input_data)) {
     if (missing(chem_id_col))
       stop("`chem_id_col` is required when `input_data` is a data frame.")
@@ -157,17 +157,17 @@ get_struc_from_dtxsid <- function(
   } else {
     input_data[!is.na(input_data)]
   }
-  
+
   chem_ids <- as.character(chem_ids) |> unique()
-  
+
   if (!length(chem_ids)) return(tibble::tibble())
-  
+
   ## Split into chunks ----------------------------------------------------------
-  
+
   chunks <- split(chem_ids, ceiling(seq_along(chem_ids) / chunk_size))
-  
+
   ## POST chunk worker ----------------------------------------------------------
-  
+
   # Always returns a tibble with one row per ID in the chunk — failures are
   # captured in the `error` column rather than propagating exceptions.
   post_chunk <- function(ids) {
@@ -179,30 +179,30 @@ get_struc_from_dtxsid <- function(
         body   = jsonlite::toJSON(ids, auto_unbox = FALSE),
         encode = "raw"
       )
-      
+
       if (httr::status_code(resp) != 200L) {
         return(tibble::tibble(
           input_term = ids,
           error      = paste0("HTTP ", httr::status_code(resp))
         ))
       }
-      
+
       raw_text <- httr::content(resp, as = "text", encoding = "UTF-8")
       parsed   <- jsonlite::fromJSON(raw_text, flatten = TRUE)
-      
+
       # Handle empty or null response
       if (is.null(parsed) || length(parsed) == 0L ||
           (is.data.frame(parsed) && nrow(parsed) == 0L)) {
         return(tibble::tibble(input_term = ids, error = "No results returned"))
       }
-      
+
       result <- tibble::as_tibble(parsed) |>
         dplyr::mutate(
           input_term = if (key_col %in% names(parsed)) .data[[key_col]] else NA_character_,
           error      = NA_character_
         ) |>
         dplyr::select(dplyr::any_of(col_order))
-      
+
       # Append error rows for any IDs absent from the response
       missing_ids <- setdiff(ids, result$input_term)
       if (length(missing_ids) > 0L) {
@@ -211,18 +211,18 @@ get_struc_from_dtxsid <- function(
           tibble::tibble(input_term = missing_ids, error = "No results returned")
         )
       }
-      
+
       result
-      
+
     }, error = function(e) {
       tibble::tibble(input_term = ids, error = conditionMessage(e))
     })
   }
-  
+
   ## Fetch in parallel ----------------------------------------------------------
-  
+
   p <- progressr::progressor(along = chunks, message = "Retrieving data")
-  
+
   results <- furrr::future_map(
     chunks,
     \(chunk) {
@@ -230,15 +230,15 @@ get_struc_from_dtxsid <- function(
       post_chunk(chunk)
     }
   ) |> purrr::list_rbind()
-  
+
   ## Sort output to match input order -------------------------------------------
-  
+
   if (sorted && nrow(results) > 0) {
     results <- results |>
       dplyr::mutate(.row_order = match(input_term, chem_ids)) |>
       dplyr::arrange(.row_order) |>
       dplyr::select(-.row_order)
   }
-  
+
   results
 }

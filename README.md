@@ -8,14 +8,12 @@ Install from GitHub using the `remotes` package:
 
 ```r
 # install.packages("remotes")
-remotes::install_github("YOUR_GITHUB_USERNAME/useful_funcs")
+remotes::install_github("markdne/comptox-tools")
 ```
-
-> Replace `YOUR_GITHUB_USERNAME` with your GitHub username after pushing this repo.
 
 ## API Key
 
-Most functions require a CompTox Dashboard API key. Register for free at <https://comptox.epa.gov/dashboard/>.
+Most functions require a CompTox Dashboard API key. Register for free at <https://www.epa.gov/comptox-tools/computational-toxicology-and-exposure-apis>.
 
 ## Functions
 
@@ -106,15 +104,4 @@ with_progress({
     chem_id_cols = chem_name
   )
 })
-```
-
-## Package setup (for developers)
-
-After cloning, regenerate documentation and check the package:
-
-```r
-# install.packages(c("devtools", "roxygen2"))
-devtools::document()   # regenerates NAMESPACE and man/ pages
-devtools::check()      # runs R CMD check
-devtools::install()    # installs locally
 ```
