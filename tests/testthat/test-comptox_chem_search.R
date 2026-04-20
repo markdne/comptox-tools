@@ -507,6 +507,49 @@ test_that("retry_no_hits = FALSE does not call GET for missing POST results", {
   expect_false(get_called)
 })
 
+test_that("POST no-hit row WITH suggestions is NOT retried via GET", {
+  # POST returns Benzene (matched) + chlorotoluene unmatched but with
+  # suggestions.  The unmatched row should be kept as-is; GET should not be
+  # called because retrying risks overwriting the POST-provided suggestions.
+  get_called <- FALSE
+  local_mocked_bindings(
+    POST = function(...) make_mock_response(json_batch_benzene_suggestion),
+    GET  = function(...) { get_called <<- TRUE; make_mock_response(json_toluene) },
+    .package = "httr"
+  )
+  result <- comptox_chem_search(
+    c("Benzene", "chlorotoluene"),
+    api_key       = "key",
+    batch         = TRUE,
+    retry_no_hits = TRUE
+  )
+  expect_false(get_called)
+  # The suggestions from POST should be preserved unchanged in the result
+  no_hit_row <- dplyr::filter(result, input_term == "chlorotoluene")
+  expect_equal(no_hit_row$suggestions, "2-Chlorotoluene | 3-Chlorotoluene")
+})
+
+test_that("POST no-hit row WITHOUT suggestions IS retried via GET", {
+  # POST returns Benzene (matched) + Toluene unmatched with no suggestions.
+  # The no-hit row should be retried via GET since GET may return a match or
+  # surface candidate names that POST did not provide.
+  get_count <- 0L
+  local_mocked_bindings(
+    POST = function(...) make_mock_response(json_batch_benzene_no_suggestion),
+    GET  = function(...) { get_count <<- get_count + 1L; make_mock_response(json_toluene) },
+    .package = "httr"
+  )
+  suppressMessages(
+    comptox_chem_search(
+      c("Benzene", "Toluene"),
+      api_key       = "key",
+      batch         = TRUE,
+      retry_no_hits = TRUE
+    )
+  )
+  expect_gte(get_count, 1L)
+})
+
 # ===========================================================================
 # data.frame input
 # ===========================================================================

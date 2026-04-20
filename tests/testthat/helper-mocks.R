@@ -141,3 +141,67 @@ json_all_null_chars <- '[{
 
 # Empty result array — API returns nothing for this identifier.
 json_empty <- '[]'
+
+# Batch POST response: Benzene matched + "chlorotoluene" unmatched WITH
+# suggestions.  Used to verify that retry_no_hits does NOT re-query via GET
+# when the POST result already contains suggestions.
+json_batch_benzene_suggestion <- '[
+  {
+    "dtxsid": "DTXSID3039242",
+    "dtxcid": "DTXCID3039242",
+    "casrn": "71-43-2",
+    "preferredName": "Benzene",
+    "smiles": "c1ccccc1",
+    "isMarkush": false,
+    "hasStructureImage": true,
+    "searchName": "Benzene",
+    "searchValue": "Benzene",
+    "rank": 1,
+    "suggestions": null
+  },
+  {
+    "dtxsid": null,
+    "dtxcid": null,
+    "casrn": null,
+    "preferredName": null,
+    "smiles": null,
+    "isMarkush": null,
+    "hasStructureImage": null,
+    "searchName": null,
+    "searchValue": "chlorotoluene",
+    "rank": null,
+    "suggestions": ["2-Chlorotoluene", "3-Chlorotoluene"]
+  }
+]'
+
+# Batch POST response: Benzene matched + "Toluene" unmatched with NO
+# suggestions.  Used to verify that retry_no_hits DOES re-query via GET when
+# the POST no-hit row carries no useful information.
+json_batch_benzene_no_suggestion <- '[
+  {
+    "dtxsid": "DTXSID3039242",
+    "dtxcid": "DTXCID3039242",
+    "casrn": "71-43-2",
+    "preferredName": "Benzene",
+    "smiles": "c1ccccc1",
+    "isMarkush": false,
+    "hasStructureImage": true,
+    "searchName": "Benzene",
+    "searchValue": "Benzene",
+    "rank": 1,
+    "suggestions": null
+  },
+  {
+    "dtxsid": null,
+    "dtxcid": null,
+    "casrn": null,
+    "preferredName": null,
+    "smiles": null,
+    "isMarkush": null,
+    "hasStructureImage": null,
+    "searchName": null,
+    "searchValue": "Toluene",
+    "rank": null,
+    "suggestions": null
+  }
+]'

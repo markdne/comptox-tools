@@ -57,9 +57,16 @@
 #' @param sorted Logical. If \code{TRUE} (default) output rows are returned in
 #'   the same order as the (deduplicated) input identifiers.
 #' @param retry_no_hits Logical. Applies only when \code{batch = TRUE}. If
-#'   \code{TRUE} (default), any identifier that returns no results from the
-#'   batch \code{POST} is automatically retried via an individual \code{GET}
-#'   request.
+#'   \code{TRUE} (default), identifiers are retried via an individual
+#'   \code{GET} request in two situations: (1) the identifier was completely
+#'   absent from the \code{POST} response (the batch endpoint sometimes
+#'   silently drops unmatched inputs), or (2) the identifier was present in
+#'   the \code{POST} response with no chemical match \emph{and} no
+#'   \code{suggestions} — cases where a \code{GET} call may return a match or
+#'   at least surface candidate names. Identifiers that the \code{POST}
+#'   already returned with \code{suggestions} are \emph{not} retried, as
+#'   doing so risks overwriting useful API-provided candidates with a less
+#'   informative \code{GET} result.
 #'
 #' @return A [tibble][tibble::tibble] with columns \code{input_term},
 #'   \code{dtxsid}, \code{dtxcid}, \code{casrn}, \code{preferredName},
@@ -333,9 +340,14 @@ comptox_chem_search <- function(
     # Identify no-hit IDs from POST: rows with NA results AND IDs absent from
     # the response entirely (in case the API omits rows for unmatched inputs).
     if (retry_no_hits && length(ids_for_post)) {
+      # Only retry POST no-hits that also lack suggestions. If the POST
+      # result already has suggestions the user can act on those directly;
+      # retrying via GET risks replacing them with a less informative result.
       na_hit_ids  <- if (nrow(post_results) > 0) {
         post_results |>
-          dplyr::filter(is.na(.data$dtxsid) & is.na(.data$smiles)) |>
+          dplyr::filter(
+            is.na(.data$dtxsid) & is.na(.data$smiles) & is.na(.data$suggestions)
+          ) |>
           dplyr::pull(.data$input_term) |>
           unique()
       } else {
