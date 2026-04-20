@@ -18,7 +18,7 @@ DTXSID, or any other identifier. Supports batch POST and individual GET
 requests.}
 \item{\code{\link[=deduplicate_chem_results]{deduplicate_chem_results()}}}{Collapse duplicate rows when multiple
 identifier columns resolve to the same chemical.}
-\item{\code{\link[=get_struc_from_dtxsid]{get_struc_from_dtxsid()}}}{Retrieve structural and physico-chemical
+\item{\code{\link[=get_struc_from_id]{get_struc_from_id()}}}{Retrieve structural and physico-chemical
 property data using DTXSID or DTXCID identifiers.}
 \item{\code{\link[=get_structure_image]{get_structure_image()}}}{Fetch PNG or SVG structure images by
 DTXSID, DTXCID, or GSID.}
@@ -75,7 +75,7 @@ argument in the ToxPrint functions.}
 \section{API key}{
 
 CompTox API functions require a Dashboard API key. Register for one at
-\url{https://comptox.epa.gov/dashboard/}.
+\url{https://www.epa.gov/comptox-tools/computational-toxicology-and-exposure-apis}.
 }
 
 \section{Parallel execution and progress bars}{
