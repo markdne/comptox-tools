@@ -250,8 +250,13 @@ comptox_chem_search <- function(
 
   # Helper: run safe_get_one over a vector of IDs, warn on failures, and
   # return the combined tibble of successful results.
-  run_get <- function(ids, p_label) {
-    p   <- progressr::progressor(along = ids, message = p_label)
+  # `p` is a progressor created by the caller (not here) so that
+  # progressr::progressor() is always called directly inside
+  # comptox_chem_search() — the function wrapped by with_progress() — rather
+  # than inside this nested helper.  Calling progressor() from a nested
+  # function prevents it from finding the with_progress() context on the call
+  # stack, producing "no binding for '...progressor'".
+  run_get <- function(ids, p) {
     raw <- furrr::future_map(
       ids,
       \(id) { p(); out <- safe_get_one(id); Sys.sleep(rate_limit); out }
@@ -289,7 +294,8 @@ comptox_chem_search <- function(
   results <- if (!batch) {
 
     # --- Individual GET for every identifier --------------------------------
-    run_get(chem_ids, "Retrieving data")
+    p <- progressr::progressor(along = chem_ids, message = "Retrieving data")
+    run_get(chem_ids, p)
 
   } else {
 
@@ -350,7 +356,8 @@ comptox_chem_search <- function(
 
     # Individual GET for trailing-hyphen IDs and any retry candidates
     get_results <- if (length(ids_for_get)) {
-      run_get(ids_for_get, "Retrieving data (GET)")
+      p_get <- progressr::progressor(along = ids_for_get, message = "Retrieving data (GET)")
+      run_get(ids_for_get, p_get)
     } else {
       tibble::tibble()
     }
