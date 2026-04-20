@@ -57,9 +57,16 @@
 #' @param sorted Logical. If \code{TRUE} (default) output rows are returned in
 #'   the same order as the (deduplicated) input identifiers.
 #' @param retry_no_hits Logical. Applies only when \code{batch = TRUE}. If
-#'   \code{TRUE} (default), any identifier that returns no results from the
-#'   batch \code{POST} is automatically retried via an individual \code{GET}
-#'   request.
+#'   \code{TRUE} (default), identifiers are retried via an individual
+#'   \code{GET} request in two situations: (1) the identifier was completely
+#'   absent from the \code{POST} response (the batch endpoint sometimes
+#'   silently drops unmatched inputs), or (2) the identifier was present in
+#'   the \code{POST} response with no chemical match \emph{and} no
+#'   \code{suggestions} — cases where a \code{GET} call may return a match or
+#'   at least surface candidate names. Identifiers that the \code{POST}
+#'   already returned with \code{suggestions} are \emph{not} retried, as
+#'   doing so risks overwriting useful API-provided candidates with a less
+#'   informative \code{GET} result.
 #'
 #' @return A [tibble][tibble::tibble] with columns \code{input_term},
 #'   \code{dtxsid}, \code{dtxcid}, \code{casrn}, \code{preferredName},
@@ -69,6 +76,9 @@
 #'   matched chemicals; for unmatched identifiers it contains a
 #'   \code{" | "}-separated string of candidate names returned by the API
 #'   that can be passed back to \code{comptox_chem_search()} for re-querying.
+#'   Identifiers for which the API returns no information (empty response or
+#'   HTTP error) appear as a row of blank (\code{NA}) fields so that every
+#'   input identifier is always represented in the output.
 #'   Returns an empty tibble when \code{input_data} contains no usable
 #'   identifiers.
 #'
@@ -76,7 +86,7 @@
 #' @importFrom dplyr distinct pick everything pull mutate select filter
 #'   bind_rows arrange any_of where
 #' @importFrom tidyr pivot_longer drop_na
-#' @importFrom purrr list_rbind safely map map_chr map_lgl
+#' @importFrom purrr list_rbind safely map map2 map_chr map_lgl
 #' @importFrom furrr future_map
 #' @importFrom progressr progressor
 #' @importFrom httr GET POST add_headers content stop_for_status
@@ -213,6 +223,18 @@ comptox_chem_search <- function(
     )
   }
 
+  # Build a one-row tibble of typed NAs for a given identifier. Used when the
+  # API returns an HTTP error or an empty response so the identifier is never
+  # silently dropped from the result.
+  na_row <- function(id) {
+    row <- tibble::tibble(input_term = id)
+    for (col in setdiff(.comptox_char_output_cols, "input_term"))
+      row[[col]] <- NA_character_
+    for (col in .comptox_logical_output_cols)
+      row[[col]] <- NA
+    row
+  }
+
   # GET a single identifier. Returns list(result, error); error is non-NULL
   # on HTTP errors or parsing failures. HTTP status is checked before parsing
   # so that 4xx/5xx responses are caught rather than silently parsed.
@@ -223,9 +245,13 @@ comptox_chem_search <- function(
         config = api_headers
       )
       httr::stop_for_status(resp)
-      parse_resp(resp) |>
+      result <- parse_resp(resp) |>
         dplyr::mutate(input_term = id) |>
         dplyr::select(dplyr::any_of(.comptox_output_cols))
+      # API returned an empty array — identifier not found and no suggestions
+      # provided. Substitute a blank NA row so the identifier is not absent
+      # from the final result.
+      if (nrow(result) == 0L) na_row(id) else result
     }
   )
 
@@ -263,8 +289,16 @@ comptox_chem_search <- function(
     )
     n_err <- sum(purrr::map_lgl(raw, \(x) !is.null(x$error)))
     if (n_err > 0)
-      rlang::warn(paste0(n_err, " GET request(s) failed and were skipped."))
-    purrr::map(raw, "result") |> purrr::list_rbind()
+      rlang::warn(
+        paste0(n_err, " GET request(s) failed; a blank row will be ",
+               "returned for each affected identifier.")
+      )
+    # For HTTP/parsing errors substitute a blank NA row so every identifier
+    # appears in the result and is sorted correctly. Empty-array responses
+    # (identifier not found, no suggestions) are already converted to NA rows
+    # inside safe_get_one before safely() captures them.
+    purrr::map2(raw, ids, \(x, id) if (!is.null(x$error)) na_row(id) else x$result) |>
+      purrr::list_rbind()
   }
 
   ## Extract and sanitize unique identifiers ----------------------------------
@@ -333,9 +367,14 @@ comptox_chem_search <- function(
     # Identify no-hit IDs from POST: rows with NA results AND IDs absent from
     # the response entirely (in case the API omits rows for unmatched inputs).
     if (retry_no_hits && length(ids_for_post)) {
+      # Only retry POST no-hits that also lack suggestions. If the POST
+      # result already has suggestions the user can act on those directly;
+      # retrying via GET risks replacing them with a less informative result.
       na_hit_ids  <- if (nrow(post_results) > 0) {
         post_results |>
-          dplyr::filter(is.na(.data$dtxsid) & is.na(.data$smiles)) |>
+          dplyr::filter(
+            is.na(.data$dtxsid) & is.na(.data$smiles) & is.na(.data$suggestions)
+          ) |>
           dplyr::pull(.data$input_term) |>
           unique()
       } else {
