@@ -299,7 +299,7 @@ test_that("sorted = FALSE does not reorder rows", {
 # HTTP error handling
 # ===========================================================================
 
-test_that("HTTP 4xx error triggers a warning and the failed request is skipped", {
+test_that("HTTP 4xx error triggers a warning and returns a blank row", {
   local_mocked_bindings(
     GET = function(...) make_mock_response('{"error":"Not Found"}', 404L),
     .package = "httr"
@@ -308,10 +308,28 @@ test_that("HTTP 4xx error triggers a warning and the failed request is skipped",
     result <- comptox_chem_search("NoSuchChem", api_key = "key", batch = FALSE),
     regexp = "failed"
   )
-  expect_equal(nrow(result), 0L)
+  expect_equal(nrow(result), 1L)
+  expect_equal(result$input_term[1], "NoSuchChem")
+  expect_true(is.na(result$dtxsid[1]))
+  expect_true(is.na(result$smiles[1]))
 })
 
-test_that("one failed GET does not prevent successful GETs from returning", {
+test_that("empty API response returns a blank row rather than dropping the identifier", {
+  local_mocked_bindings(
+    GET = function(...) make_mock_response(json_empty),
+    .package = "httr"
+  )
+  # No warning expected — empty response is normal "not found" behaviour
+  result <- comptox_chem_search("NoSuchChem", api_key = "key", batch = FALSE)
+  expect_equal(nrow(result), 1L)
+  expect_equal(result$input_term[1], "NoSuchChem")
+  expect_true(is.na(result$dtxsid[1]))
+  expect_true(is.na(result$casrn[1]))
+  expect_true(is.na(result$smiles[1]))
+  expect_true(is.na(result$suggestions[1]))
+})
+
+test_that("one failed GET returns a blank row alongside successful results", {
   call_n <- 0L
   local_mocked_bindings(
     GET = function(...) {
@@ -330,8 +348,34 @@ test_that("one failed GET does not prevent successful GETs from returning", {
     ),
     regexp = "failed"
   )
-  expect_equal(nrow(result), 1L)
-  expect_equal(result$dtxsid[1], "DTXSID3039242")
+  # Both identifiers appear — one blank row, one matched row
+  expect_equal(nrow(result), 2L)
+  failed_row <- dplyr::filter(result, input_term == "NoSuchChem")
+  expect_equal(nrow(failed_row), 1L)
+  expect_true(is.na(failed_row$dtxsid))
+  expect_true("DTXSID3039242" %in% result$dtxsid)
+})
+
+test_that("blank rows for no-result identifiers respect sorted = TRUE order", {
+  local_mocked_bindings(
+    GET = function(url, ...) {
+      if (grepl("Benzene", url, fixed = TRUE)) make_mock_response(json_benzene)
+      else                                     make_mock_response(json_empty)
+    },
+    .package = "httr"
+  )
+  result <- comptox_chem_search(
+    c("NoSuchChem", "Benzene"),
+    api_key = "key",
+    batch   = FALSE,
+    sorted  = TRUE
+  )
+  expect_equal(nrow(result), 2L)
+  # NoSuchChem was first in input — blank row should be first in output
+  expect_equal(result$input_term[1], "NoSuchChem")
+  expect_true(is.na(result$dtxsid[1]))
+  expect_equal(result$input_term[2], "Benzene")
+  expect_equal(result$dtxsid[2], "DTXSID3039242")
 })
 
 # ===========================================================================
