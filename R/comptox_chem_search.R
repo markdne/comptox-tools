@@ -13,6 +13,23 @@
   c(.comptox_logical_output_cols, .comptox_integer_output_cols)
 )
 
+# Pre-built template row with correct column types; used by na_row() and
+# parse_resp() so type definitions live in one place.
+.na_template <- tibble::tibble(
+  input_term        = NA_character_,
+  dtxsid            = NA_character_,
+  dtxcid            = NA_character_,
+  casrn             = NA_character_,
+  preferredName     = NA_character_,
+  smiles            = NA_character_,
+  isMarkush         = NA,
+  hasStructureImage = NA,
+  searchName        = NA_character_,
+  searchValue       = NA_character_,
+  rank              = NA_integer_,
+  suggestions       = NA_character_
+)
+
 
 #' Search the EPA CompTox Chemical Dashboard API for chemical information
 #'
@@ -88,7 +105,7 @@
 #'
 #' @export
 #' @importFrom dplyr distinct pick everything pull mutate select filter
-#'   bind_rows arrange any_of where
+#'   bind_rows bind_cols arrange any_of all_of where
 #' @importFrom tidyr pivot_longer drop_na
 #' @importFrom purrr list_rbind safely map map2 map_chr map_lgl
 #' @importFrom furrr future_map
@@ -96,9 +113,10 @@
 #' @importFrom httr GET POST add_headers content stop_for_status
 #' @importFrom jsonlite fromJSON
 #' @importFrom utils URLencode
-#' @importFrom stringr str_squish str_c
+#' @importFrom stringr str_squish str_c str_ends
 #' @importFrom tibble tibble as_tibble
-#' @importFrom rlang abort warn inform
+#' @importFrom glue glue
+#' @importFrom rlang abort warn inform %||%
 #'
 #' @examples
 #' \dontrun{
@@ -211,13 +229,8 @@ comptox_chem_search <- function(
     }
     # Case 1: add typed NAs for columns completely absent from the response.
     missing_cols <- setdiff(.comptox_output_cols, names(out))
-    if (length(missing_cols)) {
-      for (col in missing_cols) {
-        out[[col]] <- if (col %in% .comptox_logical_output_cols) NA
-                      else if (col %in% .comptox_integer_output_cols) NA_integer_
-                      else NA_character_
-      }
-    }
+    if (length(missing_cols))
+      out <- dplyr::bind_cols(out, dplyr::select(.na_template, dplyr::all_of(missing_cols)))
     # Case 2: coerce expected columns that came back as all-null (logical) in
     # the JSON to their correct types, so bind_rows() types are consistent.
     dplyr::mutate(
@@ -236,16 +249,7 @@ comptox_chem_search <- function(
   # Build a one-row tibble of typed NAs for a given identifier. Used when the
   # API returns an HTTP error or an empty response so the identifier is never
   # silently dropped from the result.
-  na_row <- function(id) {
-    row <- tibble::tibble(input_term = id)
-    for (col in setdiff(.comptox_char_output_cols, "input_term"))
-      row[[col]] <- NA_character_
-    for (col in .comptox_logical_output_cols)
-      row[[col]] <- NA
-    for (col in .comptox_integer_output_cols)
-      row[[col]] <- NA_integer_
-    row
-  }
+  na_row <- function(id) dplyr::mutate(.na_template, input_term = id)
 
   # GET a single identifier. Returns list(result, error); error is non-NULL
   # on HTTP errors or parsing failures. HTTP status is checked before parsing
@@ -301,15 +305,14 @@ comptox_chem_search <- function(
     )
     n_err <- sum(purrr::map_lgl(raw, \(x) !is.null(x$error)))
     if (n_err > 0)
-      rlang::warn(
-        paste0(n_err, " GET request(s) failed; a blank row will be ",
-               "returned for each affected identifier.")
-      )
+      rlang::warn(glue::glue(
+        "{n_err} GET request(s) failed; a blank row will be returned for each affected identifier."
+      ))
     # For HTTP/parsing errors substitute a blank NA row so every identifier
     # appears in the result and is sorted correctly. Empty-array responses
     # (identifier not found, no suggestions) are already converted to NA rows
     # inside safe_get_one before safely() captures them.
-    purrr::map2(raw, ids, \(x, id) if (!is.null(x$error)) na_row(id) else x$result) |>
+    purrr::map2(raw, ids, \(x, id) x$result %||% na_row(id)) |>
       purrr::list_rbind()
   }
 
@@ -350,15 +353,14 @@ comptox_chem_search <- function(
     # The CompTox POST endpoint silently strips trailing hyphens from
     # identifiers before searching, so chemicals whose names end with "-"
     # return no results. Pre-route them to individual GET calls.
-    trailing_hyphen <- grepl("-$", chem_ids)
+    trailing_hyphen <- stringr::str_ends(chem_ids, "-")
     ids_for_get     <- chem_ids[trailing_hyphen]
     ids_for_post    <- chem_ids[!trailing_hyphen]
 
     if (sum(trailing_hyphen) > 0)
-      rlang::inform(
-        paste0(sum(trailing_hyphen),
-               " identifier(s) ending in \"-\" will be searched individually via GET.")
-      )
+      rlang::inform(glue::glue(
+        "{sum(trailing_hyphen)} identifier(s) ending in \"-\" will be searched individually via GET."
+      ))
 
     # Batch POST
     post_results <- if (length(ids_for_post)) {
@@ -370,7 +372,7 @@ comptox_chem_search <- function(
       )
       n_err <- sum(purrr::map_lgl(raw_post, \(x) !is.null(x$error)))
       if (n_err > 0)
-        rlang::warn(paste0(n_err, " POST batch chunk(s) failed and were skipped."))
+        rlang::warn(glue::glue("{n_err} POST batch chunk(s) failed and were skipped."))
       purrr::map(raw_post, "result") |> purrr::list_rbind()
     } else {
       tibble::tibble()
@@ -396,10 +398,9 @@ comptox_chem_search <- function(
       extra_no_hits <- unique(c(na_hit_ids, missing_ids))
 
       if (length(extra_no_hits)) {
-        rlang::inform(
-          paste0("Retrying ", length(extra_no_hits),
-                 " identifier(s) with no batch results via individual GET.")
-        )
+        rlang::inform(glue::glue(
+          "Retrying {length(extra_no_hits)} identifier(s) with no batch results via individual GET."
+        ))
         ids_for_get  <- unique(c(ids_for_get, extra_no_hits))
         post_results <- dplyr::filter(post_results, !.data$input_term %in% extra_no_hits)
       }
@@ -606,9 +607,8 @@ deduplicate_chem_results <- function(
 
   ## Split on whether the key column is populated -----------------------------
 
-  has_key  <- !is.na(results[[by]])
-  keyed    <- results[ has_key, ]
-  unkeyed  <- results[!has_key, ]
+  keyed   <- dplyr::filter(results, !is.na(.data[[by]]))
+  unkeyed <- dplyr::filter(results,  is.na(.data[[by]]))
 
   ## Collapse duplicate rows --------------------------------------------------
 
