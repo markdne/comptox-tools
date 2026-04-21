@@ -7,7 +7,11 @@
   "suggestions"
 )
 .comptox_logical_output_cols <- c("isMarkush", "hasStructureImage")
-.comptox_char_output_cols    <- setdiff(.comptox_output_cols, .comptox_logical_output_cols)
+.comptox_integer_output_cols <- c("rank")
+.comptox_char_output_cols    <- setdiff(
+  .comptox_output_cols,
+  c(.comptox_logical_output_cols, .comptox_integer_output_cols)
+)
 
 
 #' Search the EPA CompTox Chemical Dashboard API for chemical information
@@ -209,16 +213,22 @@ comptox_chem_search <- function(
     missing_cols <- setdiff(.comptox_output_cols, names(out))
     if (length(missing_cols)) {
       for (col in missing_cols) {
-        out[[col]] <- if (col %in% .comptox_logical_output_cols) NA else NA_character_
+        out[[col]] <- if (col %in% .comptox_logical_output_cols) NA
+                      else if (col %in% .comptox_integer_output_cols) NA_integer_
+                      else NA_character_
       }
     }
-    # Case 2: coerce expected character columns that came back as all-null
-    # (logical) in the JSON to character, so bind_rows() types are consistent.
+    # Case 2: coerce expected columns that came back as all-null (logical) in
+    # the JSON to their correct types, so bind_rows() types are consistent.
     dplyr::mutate(
       out,
       dplyr::across(
         dplyr::any_of(.comptox_char_output_cols) & where(is.logical),
         as.character
+      ),
+      dplyr::across(
+        dplyr::any_of(.comptox_integer_output_cols) & where(is.logical),
+        as.integer
       )
     )
   }
@@ -232,6 +242,8 @@ comptox_chem_search <- function(
       row[[col]] <- NA_character_
     for (col in .comptox_logical_output_cols)
       row[[col]] <- NA
+    for (col in .comptox_integer_output_cols)
+      row[[col]] <- NA_integer_
     row
   }
 
