@@ -373,9 +373,13 @@ comptox_chem_search <- function(
       n_err <- sum(purrr::map_lgl(raw_post, \(x) !is.null(x$error)))
       if (n_err > 0)
         rlang::warn(glue::glue("{n_err} POST batch chunk(s) failed and were skipped."))
-      purrr::map(raw_post, "result") |> purrr::list_rbind()
+      post <- purrr::map(raw_post, "result") |> purrr::list_rbind()
+      missing_cols <- setdiff(.comptox_output_cols, names(post))
+      if (length(missing_cols))
+        post <- dplyr::bind_cols(post, dplyr::select(.na_template, dplyr::all_of(missing_cols)))
+      post
     } else {
-      tibble::tibble()
+      dplyr::slice(.na_template, 0L)
     }
 
     # Identify no-hit IDs from POST: rows with NA results AND IDs absent from
