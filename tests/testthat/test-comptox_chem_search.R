@@ -191,8 +191,7 @@ test_that("character columns are character type for a fully matched result", {
   char_cols <- c("input_term", "dtxsid", "dtxcid", "casrn", "preferredName",
                  "smiles", "searchName", "searchValue", "suggestions")
   for (col in char_cols) {
-    expect_type(result[[col]], "character",
-                label = paste0("result$", col))
+    expect_type(result[[col]], "character")
   }
 })
 
