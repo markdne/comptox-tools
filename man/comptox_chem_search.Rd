@@ -37,23 +37,43 @@ is queried individually via \code{GET}.}
 \item{chunk_size}{Positive integer. Maximum number of identifiers per
 \code{POST} batch request. Default is \code{200}.}
 
-\item{rate_limit}{Non-negative numeric. Seconds to pause after each API
-request. Default is \code{0}. Increase if you encounter rate-limiting.}
+\item{rate_limit}{Non-negative numeric. Seconds to pause between API
+requests \emph{per worker}. Default is \code{0}. When parallel execution
+is active (via a \code{future} plan with multiple workers), each worker
+sleeps independently after its own request; to enforce a strict global
+rate, either scale \code{rate_limit} proportionally to the number of
+workers or set \code{future::plan(future::sequential)} before calling
+this function.}
 
 \item{sorted}{Logical. If \code{TRUE} (default) output rows are returned in
 the same order as the (deduplicated) input identifiers.}
 
 \item{retry_no_hits}{Logical. Applies only when \code{batch = TRUE}. If
-\code{TRUE} (default), any identifier that returns no results from the
-batch \code{POST} is automatically retried via an individual \code{GET}
-request.}
+\code{TRUE} (default), identifiers are retried via an individual
+\code{GET} request in two situations: (1) the identifier was completely
+absent from the \code{POST} response (the batch endpoint sometimes
+silently drops unmatched inputs), or (2) the identifier was present in
+the \code{POST} response with no chemical match \emph{and} no
+\code{suggestions} — cases where a \code{GET} call may return a match or
+at least surface candidate names. Identifiers that the \code{POST}
+already returned with \code{suggestions} are \emph{not} retried, as
+doing so risks overwriting useful API-provided candidates with a less
+informative \code{GET} result.}
 }
 \value{
 A \link[tibble:tibble]{tibble} with columns \code{input_term},
 \code{dtxsid}, \code{dtxcid}, \code{casrn}, \code{preferredName},
 \code{smiles}, \code{isMarkush}, \code{hasStructureImage},
-\code{searchName}, \code{searchValue}, and \code{rank}. Returns an empty
-tibble when \code{input_data} contains no usable identifiers.
+\code{searchName}, \code{searchValue}, \code{rank}, and
+\code{suggestions}. The \code{suggestions} column is \code{NA} for
+matched chemicals; for unmatched identifiers it contains a
+\code{" | "}-separated string of candidate names returned by the API
+that can be passed back to \code{comptox_chem_search()} for re-querying.
+Identifiers for which the API returns no information (empty response or
+HTTP error) appear as a row of blank (\code{NA}) fields so that every
+input identifier is always represented in the output.
+Returns an empty tibble when \code{input_data} contains no usable
+identifiers.
 }
 \description{
 Retrieves chemical data (DTXSID, SMILES, CAS-RN, preferred name, etc.) from
@@ -69,6 +89,14 @@ name ends with a hyphen (\code{"-"}) are automatically routed to individual
 hyphens before searching, which causes those chemicals to return no results.
 Any other identifiers that return no results from the batch search can also
 be retried via individual \code{GET} when \code{retry_no_hits = TRUE}.
+
+When an identifier cannot be matched, the API may return candidate names in
+the \code{suggestions} column of the result. These can be inspected and
+re-queried directly:
+\preformatted{
+no_hits <- dplyr::filter(results, is.na(dtxsid), !is.na(suggestions))
+retry   <- comptox_chem_search(no_hits$suggestions, api_key = key)
+}
 }
 \examples{
 \dontrun{
