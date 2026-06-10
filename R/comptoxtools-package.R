@@ -11,6 +11,9 @@
 #'     requests.}
 #'   \item{[deduplicate_chem_results()]}{Collapse duplicate rows when multiple
 #'     identifier columns resolve to the same chemical.}
+#'   \item{[verify_chem_identifiers()]}{Check whether multiple identifier
+#'     columns per row resolve to the same chemical; flag disagreements with
+#'     one row per distinct DTXSID.}
 #'   \item{[get_struc_from_id()]}{Retrieve structural and physico-chemical
 #'     property data using DTXSID or DTXCID identifiers.}
 #'   \item{[get_structure_image()]}{Fetch PNG or SVG structure images by

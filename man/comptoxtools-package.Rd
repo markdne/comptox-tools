@@ -18,6 +18,9 @@ DTXSID, or any other identifier. Supports batch POST and individual GET
 requests.}
 \item{\code{\link[=deduplicate_chem_results]{deduplicate_chem_results()}}}{Collapse duplicate rows when multiple
 identifier columns resolve to the same chemical.}
+\item{\code{\link[=verify_chem_identifiers]{verify_chem_identifiers()}}}{Check whether multiple identifier
+columns per row resolve to the same chemical; flag disagreements with
+one row per distinct DTXSID.}
 \item{\code{\link[=get_struc_from_id]{get_struc_from_id()}}}{Retrieve structural and physico-chemical
 property data using DTXSID or DTXCID identifiers.}
 \item{\code{\link[=get_structure_image]{get_structure_image()}}}{Fetch PNG or SVG structure images by
