@@ -2,58 +2,86 @@
 % Please edit documentation in R/pubchem_dtxsid_search.R
 \name{pubchem_dtxsid_search}
 \alias{pubchem_dtxsid_search}
-\title{Search PubChem for DTXSIDs by chemical identifier}
+\title{Search PubChem for DTXSIDs, InChIKeys and SMILES by chemical identifier}
 \usage{
 pubchem_dtxsid_search(
   input_data,
   chem_id_cols,
   chunk_size = 100L,
   rate_limit = 0.2,
-  sorted = TRUE
+  sorted = TRUE,
+  namespace = c("auto", "name", "smiles", "inchi", "inchikey"),
+  max_active = 5L,
+  progress = interactive()
 )
 }
 \arguments{
-\item{input_data}{A data frame/tibble or a character vector of chemical
-identifiers (names, CAS-RNs, SMILES, InChI, etc.).}
+\item{input_data}{A data frame or a character vector of identifiers.}
 
-\item{chem_id_cols}{<\link[dplyr:dplyr_tidy_select]{tidy-select}> Column(s) in
-\code{input_data} containing chemical identifiers. Required when
-\code{input_data} is a data frame; ignored for vector input.}
+\item{chem_id_cols}{<\code{\link[dplyr:dplyr_tidy_select]{tidy-select}}> Column(s) of
+\code{input_data} holding identifiers. Required when \code{input_data} is a data
+frame; ignored for vector input.}
 
-\item{chunk_size}{Positive integer. Number of CIDs per batch POST request in
-step 2. Default is \code{100}.}
+\item{chunk_size}{Positive whole number. CIDs per batch request in step 2.
+Default is \code{100}.}
 
-\item{rate_limit}{Non-negative numeric. Seconds to pause between step-1 GET
-requests \emph{per worker}. PubChem recommends ≤5 requests/second total.
-With a parallel \code{future} plan the aggregate rate is
-\code{n_workers / rate_limit} req/s, so callers should scale accordingly
-(e.g. \code{rate_limit = n_workers / 5} keeps the aggregate at 5 req/s).
-Default of \code{0.2} is correct for a single sequential worker.}
+\item{rate_limit}{Non-negative number. Minimum seconds between requests,
+applied globally across concurrent requests. Default is \code{0.2} (5 requests
+per second).}
 
-\item{sorted}{Logical. If \code{TRUE} (default) output rows are returned in
-the same order as the (deduplicated) input identifiers.}
+\item{sorted}{Logical. If \code{TRUE} (default) rows follow the order of the
+(de-duplicated) input identifiers.}
+
+\item{namespace}{Character. How identifiers are interpreted: \code{"auto"}
+(default) treats strings starting \verb{InChI=} as InChI, strings shaped like
+an InChIKey as InChIKeys and everything else (names, CASRNs, synonyms) as
+names. Use \code{"smiles"} for SMILES input, which cannot be told apart from
+names reliably. One of \code{"auto"}, \code{"name"}, \code{"smiles"}, \code{"inchi"} or
+\code{"inchikey"}.}
+
+\item{max_active}{Positive whole number. Maximum concurrent requests.
+Default is \code{5}.}
+
+\item{progress}{Logical or string. Show a progress bar. Default is
+\code{interactive()}.}
 }
 \value{
-A \link[tibble:tibble]{tibble} with columns \code{input_term}
-(character), \code{pubchem_cid} (integer), and \code{dtxsid} (character).
-\code{pubchem_cid} and \code{dtxsid} are \code{NA} when PubChem returns
-no match or no DTXSID synonym. Returns an empty tibble when
-\code{input_data} contains no usable identifiers.
+A tibble with one row per input identifier and columns
+\code{input_term}, \code{namespace}, \code{search_status} (\code{"found"}, \code{"not_found"} or
+\code{"error"}), \code{pubchem_cid} (the first, best-matching CID),
+\code{pubchem_n_cids} (number of CIDs the identifier matched; values above 1
+mean the identifier is ambiguous in PubChem), \code{dtxsid} (DTXSID synonyms of
+the CID, \code{" | "}-separated when there are several), \code{inchikey} and
+\code{smiles} (PubChem's full SMILES, with stereochemistry and isotopes).
+An empty tibble with these columns is returned when there are no usable
+identifiers.
 }
 \description{
-Queries the PubChem PUG REST API in two steps: first resolving each
-identifier to a PubChem CID via lightweight individual GET requests, then
-retrieving synonyms (including DTXSIDs) for all resolved CIDs in chunked
-batch POST requests. Returns NA for any identifier not found in PubChem or
-with no DTXSID synonym. Every input identifier always appears in the output.
+Queries the public PubChem PUG REST API (no key needed) in two steps:
+}
+\details{
+\enumerate{
+\item Each identifier is resolved to a PubChem CID with its own \code{POST} request
+(the identifier travels in the request body, so names containing \code{/},
+\verb{#} or other URL-reserved characters are safe).
+\item Synonyms (which include DTXSIDs deposited by EPA DSSTox) and the
+InChIKey and SMILES of all resolved CIDs are retrieved in batched \code{POST}
+requests.
+}
+
+Requests run concurrently (up to \code{max_active}) under a global rate limit.
+PubChem asks for no more than 5 requests per second; the default
+\code{rate_limit = 0.2} keeps to that however many requests are in flight.
+Busy (HTTP 503) and rate-limited (HTTP 429) responses are retried with
+exponential back-off.
 }
 \examples{
 \dontrun{
-# Character vector
 pubchem_dtxsid_search(c("benzene", "71-43-2", "unknown_xyz"))
 
-# Data frame with tidy-select columns
 df <- tibble::tibble(name = "benzene", casrn = "71-43-2")
 pubchem_dtxsid_search(df, chem_id_cols = c(name, casrn))
+
+pubchem_dtxsid_search("c1ccccc1", namespace = "smiles")
 }
 }
