@@ -54,6 +54,17 @@
   name, so SMILES and InChI input failed).
 * New `max_active` and `progress` arguments on the search functions.
 
+* New `parse_casrn_dates()` and `convert_date_to_casrn()` recover CASRNs that
+  Excel turned into dates (e.g. `"08/10/4292"` -> `"4292-10-8"`), in
+  day-first, month-first, year-first and month-name formats, and optionally
+  from Excel serial numbers. Each date is turned into every CASRN it could
+  have come from and only readings with a correct check digit are kept;
+  dates with several valid readings are reported as `"ambiguous"`, not
+  guessed. These replace the previous `convert_date_to_casrn.R`; check any
+  code that relied on its old arguments or return value.
+* New `is_valid_casrn()` (format and check-digit test) and
+  `standardise_casrn()` (spaces, leading zeros, missing hyphens).
+
 ## Bug fixes
 
 * Failed requests (HTTP 5xx, time-outs) are now retried with back-off and,
