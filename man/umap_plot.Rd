@@ -16,6 +16,7 @@ umap_plot(
   arrange_by = NULL,
   arrange_desc = FALSE,
   arrange_levels = NULL,
+  point_size = 1.5,
   ...
 )
 }

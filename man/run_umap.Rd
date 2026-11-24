@@ -12,61 +12,156 @@ run_umap(
   min_dist = 0.1,
   spread = 1,
   random_state = 2024L,
-  init = "spectral"
+  init = "auto",
+  legacy_compatibility_layout = TRUE,
+  optimizer = NULL,
+  nearest_neighbour_backend = "auto",
+  n_jobs = NULL
 )
 }
 \arguments{
-\item{df}{A numeric matrix containing the features to project.}
+\item{df}{A numeric (or logical) matrix containing the features to project,
+one row per observation. Row names are kept in the layout.}
 
 \item{method}{Character. UMAP implementation to use. One of
-\code{"umap-learn"} (default) or \code{"naive"}. The \code{"umap-learn"}
-option requires the Python \pkg{umap-learn} package to be installed in the
-active \pkg{reticulate} environment.}
+\code{"umap-learn"} (default) or \code{"naive"}. The \code{"umap-learn"} option needs
+the Python \pkg{umap-learn} package (>= 0.6.0) in the active
+\pkg{reticulate} environment. The remaining umap-learn-only arguments
+(\code{legacy_compatibility_layout}, \code{optimizer}, \code{nearest_neighbour_backend},
+\code{n_jobs}) are ignored, with a warning, when \code{method = "naive"}.}
 
 \item{n_neighbours}{Positive integer. Number of nearest neighbours
 considered during graph construction.
 \itemize{
 \item Low values emphasise local structure.
 \item High values emphasise global structure.
-Default is \code{15}.
-}}
+}
+
+Default is \code{15}.}
 
 \item{metric}{Character. Distance metric used to compute pairwise
-distances. Common choices are \code{"jaccard"} (default),
-\code{"euclidean"}, and \code{"cosine"}. See the \pkg{umap} package
-documentation for the full list of supported metrics.}
+distances. Common choices are \code{"jaccard"} (default), \code{"euclidean"} and
+\code{"cosine"}. See the umap-learn documentation for the full list of
+supported metrics.}
 
 \item{min_dist}{Numeric. Minimum distance between embedded points.
 \itemize{
 \item Low values produce tighter clusters.
 \item High values spread points further apart.
-Default is \code{0.1}.
-}}
+}
+
+Default is \code{0.1}.}
 
 \item{spread}{Numeric. Effective scale of the embedded points relative to
 \code{min_dist}. Default is \code{1}.}
 
-\item{random_state}{Integer. Random seed for reproducibility. Default is
-\code{2024}.}
+\item{random_state}{Integer or \code{NULL}. Random seed for reproducibility;
+\code{NULL} for no seed. Default is \code{2024}.}
 
 \item{init}{Character or matrix. Initialisation method for the embedding.
-Either \code{"spectral"} (default) or \code{"random"}.}
+\itemize{
+\item \code{"auto"} (default): \code{"spectral"} for the legacy pipeline (and for
+\code{method = "naive"}), \code{"recursive"} for the new pipeline.
+\item \code{"spectral"} or \code{"random"}: available for both methods.
+\item \code{"recursive"}, \code{"pca"} or \code{"tswspectral"}: \code{method = "umap-learn"}
+only. \code{"tswspectral"} is a faster spectral variant for cases where
+spectral initialisation is slow or fails.
+\item A numeric matrix with one row per row of \code{df} and two columns giving
+starting coordinates.
+}
+
+Keep \code{"auto"} with \code{legacy_compatibility_layout = FALSE} to get the full
+new pipeline; \code{"spectral"} would combine the old start with the new
+optimiser.}
+
+\item{legacy_compatibility_layout}{Logical. Sets umap-learn's
+\code{compatibility_layout}, which chooses the layout pipeline.
+\itemize{
+\item \code{TRUE} (default): legacy (umap-learn 0.5.x) pipeline. Use this to
+reproduce embeddings made before umap-learn 0.6.
+\item \code{FALSE}: new (umap-learn 0.6) pipeline.
+}
+
+Setting it explicitly also silences umap-learn's \code{FutureWarning} about
+the default changing.}
+
+\item{optimizer}{Character or \code{NULL}. Layout optimiser.
+\itemize{
+\item \code{NULL} (default): \code{"compatibility"} for the legacy pipeline,
+\code{"adam"} for the new pipeline.
+\item \code{"adam"} or \code{"momentum"}: new pipeline only; an error with
+\code{legacy_compatibility_layout = TRUE}.
+\item \code{"compatibility"}: the original immediate-update optimiser.
+}}
+
+\item{nearest_neighbour_backend}{Character. Library used to find the
+nearest neighbours.
+\itemize{
+\item \code{"auto"} (default): RINND when it is installed, supports \code{metric}
+and \code{df} has at least 4,096 rows; PyNNDescent otherwise.
+\item \code{"pynndescent"}: always PyNNDescent.
+\item \code{"rinnd"}: always RINND; an error if it is not installed. Install it
+with \code{reticulate::py_require("rinnd>=0.3.1")}.
+}
+
+The legacy pipeline always uses PyNNDescent, so \code{"rinnd"} is ignored
+(with a warning) when \code{legacy_compatibility_layout = TRUE}. Because RINND
+only accepts single-precision input, \code{df} is passed to umap-learn as
+float32 when the new pipeline is used with \code{"auto"} or \code{"rinnd"}.}
+
+\item{n_jobs}{Integer or \code{NULL}. Number of CPU cores to use; \code{-1} for all.
+\itemize{
+\item \code{NULL} (default): all cores, except for the legacy pipeline with a
+\code{random_state}, which uses one core.
+\item The legacy pipeline is only reproducible on one core, so values other
+than \code{1} are ignored (with a warning) when
+\code{legacy_compatibility_layout = TRUE} and \code{random_state} is set.
+}}
 }
 \value{
-A \code{umap} object as returned by \code{\link[umap]{umap}},
-which includes a \code{layout} matrix with one row per observation and
-two columns giving the 2-D coordinates.
+A \code{umap} object, as returned by \code{\link[umap:umap]{umap::umap()}}: a list with
+\itemize{
+\item \code{layout}: matrix with one row per observation and two columns giving
+the 2-D coordinates;
+\item \code{UMAP}: the fitted Python model (\code{method = "umap-learn"} only);
+\item \code{config}: the settings used, including \code{compatibility_layout},
+\code{optimizer}, \code{nearest_neighbor_backend} and \code{umap_learn_version}.
+}
+
+The object works with \code{\link[=umap_layout]{umap_layout()}} and with \code{predict()} for new data.
 }
 \description{
 Projects high-dimensional data to 2 dimensions using the UMAP algorithm.
-By default the function delegates to the Python \pkg{umap-learn} library via
-\pkg{reticulate}, which supports a wider range of distance metrics (including
-Jaccard) than the pure-R \code{"naive"} implementation.
+By default the function calls the Python \pkg{umap-learn} library
+(version 0.6.0 or later) via \pkg{reticulate}. It supports a wider range of
+distance metrics (including Jaccard) than the pure-R \code{"naive"}
+implementation from the \pkg{umap} package.
+}
+\details{
+umap-learn 0.6 offers two layout pipelines:
+\itemize{
+\item \strong{Legacy (0.5.x) pipeline} (\code{legacy_compatibility_layout = TRUE}, the
+default): spectral initialisation and the original immediate-update
+optimiser. With a fixed \code{random_state} it reproduces umap-learn 0.5.x
+embeddings exactly, but runs single-threaded.
+\item \strong{New (0.6) pipeline} (\code{legacy_compatibility_layout = FALSE}): recursive
+initialisation, the Adam optimiser and hard-negative sampling. It is
+faster, reproducible with a fixed \code{random_state} while using every core,
+and gives different embeddings from the legacy pipeline.
+}
 }
 \examples{
-\dontrun{
-# Create a binary feature matrix and project with the pure-R method
-mat <- matrix(rbinom(500, 1, 0.3), nrow = 50, ncol = 10)
+# Binary feature matrix projected with the pure-R method
+set.seed(2024)
+mat <- matrix(stats::rbinom(500, 1, 0.3), nrow = 50, ncol = 10)
 result <- run_umap(mat, method = "naive", metric = "euclidean")
-}
+head(result$layout)
+
+\dontshow{if (reticulate::py_module_available("umap")) withAutoprint(\{ # examplesIf}
+# Legacy (0.5.x) pipeline: reproduces earlier embeddings
+legacy_result <- run_umap(mat)
+
+# New (0.6) pipeline: recursive initialisation and the Adam optimiser
+new_result <- run_umap(mat, legacy_compatibility_layout = FALSE)
+\dontshow{\}) # examplesIf}
 }

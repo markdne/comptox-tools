@@ -2,121 +2,150 @@
 % Please edit documentation in R/verify_chem_identifiers.R
 \name{verify_chem_identifiers}
 \alias{verify_chem_identifiers}
-\title{Verify that multiple chemical identifiers per row resolve to the same chemical}
+\title{Check that the chemical identifiers in each row refer to the same chemical}
 \usage{
 verify_chem_identifiers(
   input_data,
-  api_key,
+  api_key = Sys.getenv("CTX_API_KEY"),
   chem_id_cols,
   batch = TRUE,
   chunk_size = 200L,
-  rate_limit = 0
+  rate_limit = 0,
+  pubchem_fallback = FALSE,
+  pubchem_rate_limit = 0.2,
+  max_active = 5L,
+  progress = interactive()
 )
 }
 \arguments{
-\item{input_data}{A data frame or tibble containing chemical identifier
-columns.}
+\item{input_data}{A data frame with two or more identifier columns.}
 
-\item{api_key}{Your CompTox Dashboard API key (character scalar). Register
-at
-\url{https://www.epa.gov/comptox-tools/computational-toxicology-and-exposure-apis}.}
+\item{api_key}{Character. Your CTX API key. Defaults to the \code{CTX_API_KEY}
+environment variable.}
 
 \item{chem_id_cols}{<\code{\link[dplyr:dplyr_tidy_select]{tidy-select}}> Two or more
-columns containing chemical identifiers (e.g. \code{c(chem_name, casrn)}).
-All non-missing, non-blank values across the selected columns are searched.
-At least two columns are required.}
+identifier columns (e.g. \code{c(chem_name, casrn)}). All non-missing,
+non-blank values are searched.}
 
-\item{batch}{Logical (default \code{TRUE}). Passed to
-\code{\link{comptox_chem_search}()}.}
+\item{batch}{Logical. Passed to \code{\link[=comptox_chem_search]{comptox_chem_search()}}. Default is \code{TRUE}.}
 
-\item{chunk_size}{Positive integer (default \code{200L}). Passed to
-\code{\link{comptox_chem_search}()}.}
+\item{chunk_size}{Positive whole number. Passed to \code{\link[=comptox_chem_search]{comptox_chem_search()}}.
+Default is \code{200}.}
 
-\item{rate_limit}{Non-negative numeric (default \code{0}). Passed to
-\code{\link{comptox_chem_search}()}.}
+\item{rate_limit}{Non-negative number. Minimum seconds between CompTox
+requests. Default is \code{0}.}
+
+\item{pubchem_fallback}{Logical. If \code{TRUE}, identifiers with no direct
+CompTox match are searched in PubChem. Default is \code{FALSE}.}
+
+\item{pubchem_rate_limit}{Non-negative number. Minimum seconds between
+PubChem requests. Default is \code{0.2} (PubChem's limit of 5 per second).}
+
+\item{max_active}{Positive whole number. Maximum concurrent requests per
+service. Default is \code{5}.}
+
+\item{progress}{Logical. Show progress bars. Default is \code{interactive()}.}
 }
 \value{
-A tibble containing all columns from \code{input_data} followed by:
-\describe{
-\item{\code{dtxsid}}{DTXSID resolved from the CompTox API (\code{NA}
-for \code{"no_match"} rows).}
-\item{\code{dtxcid}}{DTXCID corresponding to \code{dtxsid}.}
-\item{\code{preferredName}}{Preferred chemical name from the API.}
-\item{\code{smiles}}{SMILES structure string.}
-\item{\code{isMarkush}}{Logical; whether the structure is a Markush
-structure.}
-\item{\code{hasStructureImage}}{Logical; whether a structure image is
-available.}
-\item{\code{rank}}{API search rank.}
-\item{\code{agreement}}{One of \code{"agree"}, \code{"disagree"}, or
-\code{"no_match"}.
-\describe{
-\item{\code{"agree"}}{All non-missing identifiers that resolved did
-so to the same DTXSID (one output row).}
-\item{\code{"disagree"}}{At least two identifiers resolved to
-different DTXSIDs; the input row is expanded to one output row per
-distinct DTXSID.}
-\item{\code{"no_match"}}{No identifier resolved to a DTXSID (one
-output row with \code{NA} chemical data).}
+A tibble with all columns of \code{input_data} followed by:
+\itemize{
+\item \code{dtxsid}, \code{dtxcid}, \code{preferredName}, \code{comptox_casrn}, \code{smiles},
+\code{isMarkush}, \code{hasStructureImage}: CompTox data for the chemical.
+\item \code{inchikey}: InChIKey of the chemical (CompTox, or PubChem when there is
+no DTXSID).
+\item \code{pubchem_cid}, \code{pubchem_inchikey}, \code{pubchem_smiles}: PubChem data, when
+an identifier in the row was resolved through PubChem.
+\item \code{resolved_via}: tier(s) that gave this chemical.
+\item \code{resolution_detail}: what each identifier in the row resolved to.
+\item \code{agreement}: see Details.
 }
-}
-}
-Rows are ordered to match \code{input_data}; expanded \code{"disagree"}
-rows for a given input row appear consecutively.
+
+Rows follow the order of \code{input_data}; expanded \code{"disagree"} and
+\code{"ambiguous"} rows for an input row are consecutive.
 }
 \description{
-For each row of \code{input_data}, searches the CompTox Chemical Dashboard
-for every identifier in \code{chem_id_cols} and determines whether they all
-resolve to the same chemical (DTXSID). When all identifiers agree, one row
-is returned. When identifiers resolve to different chemicals, one row per
-distinct DTXSID is returned. Rows where no identifier matched are returned
-once with \code{NA} chemical data.
+For each row of \code{input_data}, every identifier in \code{chem_id_cols} (e.g. a
+chemical name and a CASRN) is resolved to a chemical, and the row is
+classified by whether those chemicals agree. Rows whose identifiers point
+to different chemicals are expanded to one row per candidate chemical so
+they can be reviewed side by side.
 }
 \details{
-\subsection{Suggestion cross-validation}{
+\subsection{How each identifier is resolved}{
 
-When an identifier returns no direct match but the API provides candidate
-suggestions, those candidates are searched in a second API call. A
-suggestion-derived DTXSID is accepted for that identifier only if it matches
-the DTXSID already directly resolved by another identifier in the same row.
-Suggestions that cannot be cross-validated against at least one direct hit
-are discarded, and the identifier is treated as unresolved.
+Identifiers are resolved in three tiers; the first tier that gives an
+answer is used.
+\enumerate{
+\item \strong{CompTox direct match} (\code{resolved_via = "comptox"}): an exact
+\code{\link[=comptox_chem_search]{comptox_chem_search()}} hit. If an identifier matches several DTXSIDs
+and one of them is also the unique direct match of another identifier in
+the same row, that one is kept.
+\item \strong{CompTox suggestion} (\code{"comptox_suggestion"}): when there is no direct
+match, the API's suggested names are searched. A suggestion is accepted
+only if its DTXSID equals the unique direct match of another identifier
+in the same row, so suggestions can confirm but never introduce a
+chemical.
+\item \strong{PubChem} (\code{"pubchem"}, only with \code{pubchem_fallback = TRUE}): the
+identifier is searched with \code{\link[=pubchem_dtxsid_search]{pubchem_dtxsid_search()}}. A DTXSID synonym
+of the PubChem compound is used directly. If there is none, the PubChem
+InChIKey is searched in CompTox; if that also fails the chemical is
+keyed on the InChIKey alone (\code{dtxsid} is \code{NA}, \code{inchikey} is set).
+PubChem DTXSIDs are looked up in CompTox so their rows carry the same
+CompTox fields as directly matched rows.
+}
+}
+
+\subsection{Agreement classes}{
+\itemize{
+\item \code{"agree"}: two or more identifiers, all resolved, all to the same
+chemical.
+\item \code{"partial"}: every resolved identifier gives the same chemical, but at
+least one identifier did not resolve (worth checking: the unresolved
+identifier may be wrong).
+\item \code{"single_id"}: only one identifier was supplied for the row and it
+resolved; nothing could be cross-checked.
+\item \code{"disagree"}: at least two identifiers resolved to different chemicals.
+The row is expanded to one row per chemical.
+\item \code{"ambiguous"}: no two identifiers contradict each other, but an
+identifier matched several chemicals that the row cannot narrow down
+(e.g. a name shared by several substances). Expanded like \code{"disagree"}.
+\item \code{"no_match"}: no identifier resolved (or all were missing).
+}
+
+\code{resolution_detail} spells out what each identifier resolved to, e.g.
+\code{"chem_name 'Toluene' -> DTXSID7021360 (comptox); casrn '71-43-2' -> DTXSID3039242 (comptox)"}.
 }
 
 \subsection{Column name conflicts}{
 
-The function appends the following columns to \code{input_data}:
-\code{dtxsid}, \code{dtxcid}, \code{preferredName}, \code{smiles},
-\code{isMarkush}, \code{hasStructureImage}, \code{rank}, \code{agreement}.
-If \code{input_data} already contains any of these names the function aborts
-with an informative error. Rename the conflicting column(s) before calling.
-
-The CompTox API \code{casrn} field is intentionally excluded from the output
-to avoid clashing with a user \code{casrn} input column. Retrieve it via
-\code{\link{get_struc_from_id}()} or \code{\link{comptox_chem_search}()} if
-needed.
+The function appends the columns \code{dtxsid}, \code{dtxcid}, \code{preferredName},
+\code{comptox_casrn}, \code{smiles}, \code{inchikey}, \code{isMarkush}, \code{hasStructureImage},
+\code{pubchem_cid}, \code{pubchem_inchikey}, \code{pubchem_smiles}, \code{resolved_via},
+\code{resolution_detail} and \code{agreement}. If \code{input_data} already has any of
+these (or \code{.orig_row}) it stops with an error; rename them first. The
+CompTox CASRN is returned as \code{comptox_casrn} so it never clashes with an
+input \code{casrn} column.
 }
 }
 \examples{
 \dontrun{
 df <- tibble::tibble(
-  chem_name = c("Benzene", "Toluene",  "Benzene"),
-  casrn     = c("71-43-2", "71-43-2",  "108-88-3"),
-  conc      = c(1.0,        2.0,         3.0)
+  chem_name = c("Benzene", "Toluene", "Benzene"),
+  casrn = c("71-43-2", "71-43-2", NA),
+  conc = c(1.0, 2.0, 3.0)
 )
 
-# Row 1: both identifiers resolve to Benzene          -> 1 row ("agree")
-# Row 2: name=Toluene DTXSID, casrn=Benzene DTXSID   -> 2 rows ("disagree")
-# Row 3: name=Benzene DTXSID, casrn=Toluene DTXSID   -> 2 rows ("disagree")
-result <- verify_chem_identifiers(
-  input_data   = df,
-  api_key      = Sys.getenv("COMPTOX_API_KEY"),
-  chem_id_cols = c(chem_name, casrn)
+# Row 1: name and CASRN both give benzene          -> 1 row, "agree"
+# Row 2: name gives toluene, CASRN gives benzene    -> 2 rows, "disagree"
+# Row 3: only a name supplied                       -> 1 row, "single_id"
+verified <- verify_chem_identifiers(
+  df,
+  chem_id_cols = c(chem_name, casrn),
+  pubchem_fallback = TRUE
 )
 }
-
 }
 \seealso{
-\code{\link{comptox_chem_search}()},
-\code{\link{deduplicate_chem_results}()}
+\code{\link[=comptox_chem_search]{comptox_chem_search()}}, \code{\link[=pubchem_dtxsid_search]{pubchem_dtxsid_search()}},
+\code{\link[=flag_duplicate_chems]{flag_duplicate_chems()}}
 }

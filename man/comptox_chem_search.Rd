@@ -2,132 +2,107 @@
 % Please edit documentation in R/comptox_chem_search.R
 \name{comptox_chem_search}
 \alias{comptox_chem_search}
-\title{Search the EPA CompTox Chemical Dashboard API for chemical information}
+\title{Search the EPA CompTox Chemicals Dashboard API for chemical identifiers}
 \usage{
 comptox_chem_search(
   input_data,
   search_type = "equal_to",
-  api_key,
+  api_key = Sys.getenv("CTX_API_KEY"),
   chem_id_cols,
   batch = TRUE,
   chunk_size = 200L,
   rate_limit = 0,
   sorted = TRUE,
-  retry_no_hits = TRUE
+  retry_no_hits = TRUE,
+  max_active = 5L,
+  progress = interactive()
 )
 }
 \arguments{
-\item{input_data}{A data frame/tibble or a character vector of chemical
+\item{input_data}{A data frame or a character vector of chemical
 identifiers.}
 
-\item{search_type}{Character. The matching strategy. One of
-\code{"equal_to"} (default), \code{"starts_with"}, or \code{"contains"}.
-See \url{https://api-ccte.epa.gov/docs/chemical.html} for details.}
+\item{search_type}{Character. Matching strategy: \code{"equal_to"} (default),
+\code{"starts_with"} or \code{"contains"}.}
 
-\item{api_key}{Character. Your CompTox Dashboard API key.}
+\item{api_key}{Character. Your CTX API key. Defaults to the \code{CTX_API_KEY}
+environment variable.}
 
-\item{chem_id_cols}{<\code{\link[dplyr:dplyr_tidy_select]{tidy-select}}> Column(s)
-in \code{input_data} that contain chemical identifiers. Required when
-\code{input_data} is a data frame; ignored for vector input.}
+\item{chem_id_cols}{<\code{\link[dplyr:dplyr_tidy_select]{tidy-select}}> Column(s) of
+\code{input_data} holding identifiers. Required when \code{input_data} is a data
+frame; ignored for vector input.}
 
-\item{batch}{Logical. If \code{TRUE} (default) identifiers are sent in
-batches via \code{POST} for efficiency. If \code{FALSE} each identifier
-is queried individually via \code{GET}.}
+\item{batch}{Logical. If \code{TRUE} (default) identifiers are sent in batches
+via \code{POST}; if \code{FALSE} each identifier is a separate \code{GET} request.}
 
-\item{chunk_size}{Positive integer. Maximum number of identifiers per
-\code{POST} batch request. Default is \code{200}.}
+\item{chunk_size}{Positive whole number. Maximum identifiers per \code{POST}
+request. Default is \code{200}.}
 
-\item{rate_limit}{Non-negative numeric. Seconds to pause between API
-requests \emph{per worker}. Default is \code{0}. When parallel execution
-is active (via a \code{future} plan with multiple workers), each worker
-sleeps independently after its own request; to enforce a strict global
-rate, either scale \code{rate_limit} proportionally to the number of
-workers or set \code{future::plan(future::sequential)} before calling
-this function.}
+\item{rate_limit}{Non-negative number. Minimum seconds between requests,
+applied globally across all concurrent requests. Default is \code{0} (no
+throttling).}
 
-\item{sorted}{Logical. If \code{TRUE} (default) output rows are returned in
-the same order as the (deduplicated) input identifiers.}
+\item{sorted}{Logical. If \code{TRUE} (default) rows are returned in the order of
+the (de-duplicated) input identifiers.}
 
-\item{retry_no_hits}{Logical. Applies only when \code{batch = TRUE}. If
-\code{TRUE} (default), identifiers are retried via an individual
-\code{GET} request in two situations: (1) the identifier was completely
-absent from the \code{POST} response (the batch endpoint sometimes
-silently drops unmatched inputs), or (2) the identifier was present in
-the \code{POST} response with no chemical match \emph{and} no
-\code{suggestions} — cases where a \code{GET} call may return a match or
-at least surface candidate names. Identifiers that the \code{POST}
-already returned with \code{suggestions} are \emph{not} retried, as
-doing so risks overwriting useful API-provided candidates with a less
-informative \code{GET} result.}
+\item{retry_no_hits}{Logical. Only used when \code{batch = TRUE}. If \code{TRUE}
+(default) identifiers absent from the \code{POST} response, or returned with no
+match and no suggestions, are retried with \code{GET}.}
+
+\item{max_active}{Positive whole number. Maximum concurrent requests.
+Default is \code{5}.}
+
+\item{progress}{Logical or string. Show a progress bar (a string names the
+bar). Default is \code{interactive()}.}
 }
 \value{
-A \link[tibble:tibble]{tibble} with columns \code{input_term},
-\code{dtxsid}, \code{dtxcid}, \code{casrn}, \code{preferredName},
-\code{smiles}, \code{isMarkush}, \code{hasStructureImage},
-\code{searchName}, \code{searchValue}, \code{rank}, and
-\code{suggestions}. The \code{suggestions} column is \code{NA} for
-matched chemicals; for unmatched identifiers it contains a
-\code{" | "}-separated string of candidate names returned by the API
-that can be passed back to \code{comptox_chem_search()} for re-querying.
-Identifiers for which the API returns no information (empty response or
-HTTP error) appear as a row of blank (\code{NA}) fields so that every
-input identifier is always represented in the output.
-Returns an empty tibble when \code{input_data} contains no usable
-identifiers.
+A tibble with one or more rows per input identifier and columns
+\code{input_term}, \code{dtxsid}, \code{dtxcid}, \code{casrn}, \code{preferredName}, \code{smiles},
+\code{isMarkush}, \code{hasStructureImage}, \code{searchName}, \code{searchValue}, \code{rank},
+\code{suggestions} and \code{search_status}. \code{suggestions} holds a \code{" | "}-separated
+string of candidate names for unmatched identifiers. \code{search_status} is
+\code{"found"}, \code{"not_found"} (the API answered but found nothing) or
+\code{"error"} (the request failed after retries); identifiers with status
+\code{"error"} should be searched again rather than treated as absent from
+CompTox. Every input identifier appears in the output. An empty tibble
+with these columns is returned when there are no usable identifiers.
 }
 \description{
-Retrieves chemical data (DTXSID, SMILES, CAS-RN, preferred name, etc.) from
-the EPA CompTox Chemical Dashboard API for one or more identifiers. Inputs
-can be chemical names, CAS registry numbers, DTXSIDs, or any identifier
-recognised by the API.
+Retrieves chemical data (DTXSID, SMILES, CASRN, preferred name, etc.) from
+the CTX Chemical API for one or more identifiers. Inputs can be chemical
+names, CAS registry numbers, DTXSIDs, InChIKeys or any identifier the API
+recognises.
 }
 \details{
-When \code{batch = TRUE} (the default), identifiers are sent to the
-\code{POST} batch endpoint in chunks of \code{chunk_size}. Identifiers whose
-name ends with a hyphen (\code{"-"}) are automatically routed to individual
-\code{GET} calls instead, because the \code{POST} endpoint strips trailing
-hyphens before searching, which causes those chemicals to return no results.
-Any other identifiers that return no results from the batch search can also
-be retried via individual \code{GET} when \code{retry_no_hits = TRUE}.
+With \code{batch = TRUE} (the default) identifiers are sent to the \code{POST} batch
+endpoint in chunks of \code{chunk_size}. Identifiers ending in a hyphen (\code{"-"})
+are sent as individual \code{GET} requests instead, because the \code{POST} endpoint
+strips trailing hyphens before searching. With \code{retry_no_hits = TRUE},
+identifiers missing from the batch response, or returned with no match and
+no suggestions, are retried with \code{GET}.
 
-When an identifier cannot be matched, the API may return candidate names in
-the \code{suggestions} column of the result. These can be inspected and
-re-queried directly:
-\preformatted{
-no_hits <- dplyr::filter(results, is.na(dtxsid), !is.na(suggestions))
-retry   <- comptox_chem_search(no_hits$suggestions, api_key = key)
-}
+Requests are made concurrently (up to \code{max_active} at a time). Rate-limited
+(HTTP 429) and temporary server errors (HTTP 502-504) are retried with
+exponential back-off for up to two minutes.
+
+When an identifier cannot be matched the API may return candidate names in
+the \code{suggestions} column, which can be passed back to this function:
+
+\if{html}{\out{<div class="sourceCode r">}}\preformatted{no_hits <- dplyr::filter(results, is.na(dtxsid), !is.na(suggestions))
+retry <- comptox_chem_search(no_hits$suggestions, api_key = key)
+}\if{html}{\out{</div>}}
 }
 \examples{
 \dontrun{
 df <- tibble::tibble(
-  chem_name = c("1-Chloro-4-nitrobenzene", "4-Nitrobenzenamine", "4-Nitrophenol"),
-  casrn     = c("100-00-5", "100-01-6", "100-02-7")
+  chem_name = c("1-Chloro-4-nitrobenzene", "4-Nitrobenzenamine"),
+  casrn = c("100-00-5", "100-01-6")
 )
 
-# Single-column search using batch POST (default)
-results <- comptox_chem_search(
-  input_data   = df,
-  search_type  = "equal_to",
-  api_key      = "your_api_key_here",
-  chem_id_cols = chem_name
-)
+# Search both identifier columns (API key read from CTX_API_KEY)
+results <- comptox_chem_search(df, chem_id_cols = c(chem_name, casrn))
 
-# Multi-column search (all unique IDs across both columns are searched)
-results <- comptox_chem_search(
-  input_data   = df,
-  search_type  = "equal_to",
-  api_key      = "your_api_key_here",
-  chem_id_cols = c(chem_name, casrn)
-)
-
-# Character vector input, individual GET requests, with a progress bar
-results <- progressr::with_progress({
-  comptox_chem_search(
-    input_data = c("100-00-5", "100-01-6"),
-    api_key    = "your_api_key_here",
-    batch      = FALSE
-  )
-})
+# Character vector, individual GET requests
+results <- comptox_chem_search(c("100-00-5", "100-01-6"), batch = FALSE)
 }
 }

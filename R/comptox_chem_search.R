@@ -1,21 +1,14 @@
-# Package-level constants for the CompTox search output schema.
-# Defined once so they are never reconstructed on every function call and are
-# accessible to both exported functions in this file.
-.comptox_output_cols         <- c(
+# Output schema of comptox_chem_search(). Defined once at package level so the
+# column names and types live in one place.
+.comptox_output_cols <- c(
   "input_term", "dtxsid", "dtxcid", "casrn", "preferredName", "smiles",
   "isMarkush", "hasStructureImage", "searchName", "searchValue", "rank",
-  "suggestions"
-)
-.comptox_logical_output_cols <- c("isMarkush", "hasStructureImage")
-.comptox_integer_output_cols <- c("rank")
-.comptox_char_output_cols    <- setdiff(
-  .comptox_output_cols,
-  c(.comptox_logical_output_cols, .comptox_integer_output_cols)
+  "suggestions", "search_status"
 )
 
-# Pre-built template row with correct column types; used by na_row() and
-# parse_resp() so type definitions live in one place.
-.na_template <- tibble::tibble(
+# One-row template of typed NAs, used for unmatched identifiers and to fill
+# columns missing from an API response
+.comptox_na_template <- tibble::tibble(
   input_term        = NA_character_,
   dtxsid            = NA_character_,
   dtxcid            = NA_character_,
@@ -27,496 +20,501 @@
   searchName        = NA_character_,
   searchValue       = NA_character_,
   rank              = NA_integer_,
-  suggestions       = NA_character_
+  suggestions       = NA_character_,
+  search_status     = NA_character_
 )
 
-
-#' Search the EPA CompTox Chemical Dashboard API for chemical information
+#' Search the EPA CompTox Chemicals Dashboard API for chemical identifiers
 #'
-#' Retrieves chemical data (DTXSID, SMILES, CAS-RN, preferred name, etc.) from
-#' the EPA CompTox Chemical Dashboard API for one or more identifiers. Inputs
-#' can be chemical names, CAS registry numbers, DTXSIDs, or any identifier
-#' recognised by the API.
+#' Retrieves chemical data (DTXSID, SMILES, CASRN, preferred name, etc.) from
+#' the CTX Chemical API for one or more identifiers. Inputs can be chemical
+#' names, CAS registry numbers, DTXSIDs, InChIKeys or any identifier the API
+#' recognises.
 #'
-#' When \code{batch = TRUE} (the default), identifiers are sent to the
-#' \code{POST} batch endpoint in chunks of \code{chunk_size}. Identifiers whose
-#' name ends with a hyphen (\code{"-"}) are automatically routed to individual
-#' \code{GET} calls instead, because the \code{POST} endpoint strips trailing
-#' hyphens before searching, which causes those chemicals to return no results.
-#' Any other identifiers that return no results from the batch search can also
-#' be retried via individual \code{GET} when \code{retry_no_hits = TRUE}.
+#' With `batch = TRUE` (the default) identifiers are sent to the `POST` batch
+#' endpoint in chunks of `chunk_size`. Identifiers ending in a hyphen (`"-"`)
+#' are sent as individual `GET` requests instead, because the `POST` endpoint
+#' strips trailing hyphens before searching. With `retry_no_hits = TRUE`,
+#' identifiers missing from the batch response, or returned with no match and
+#' no suggestions, are retried with `GET`.
 #'
-#' When an identifier cannot be matched, the API may return candidate names in
-#' the \code{suggestions} column of the result. These can be inspected and
-#' re-queried directly:
-#' \preformatted{
+#' Requests are made concurrently (up to `max_active` at a time). Rate-limited
+#' (HTTP 429) and temporary server errors (HTTP 502-504) are retried with
+#' exponential back-off for up to two minutes.
+#'
+#' When an identifier cannot be matched the API may return candidate names in
+#' the `suggestions` column, which can be passed back to this function:
+#'
+#' ```r
 #' no_hits <- dplyr::filter(results, is.na(dtxsid), !is.na(suggestions))
-#' retry   <- comptox_chem_search(no_hits$suggestions, api_key = key)
-#' }
+#' retry <- comptox_chem_search(no_hits$suggestions, api_key = key)
+#' ```
 #'
-#' @param input_data A data frame/tibble or a character vector of chemical
+#' @param input_data A data frame or a character vector of chemical
 #'   identifiers.
-#' @param search_type Character. The matching strategy. One of
-#'   \code{"equal_to"} (default), \code{"starts_with"}, or \code{"contains"}.
-#'   See \url{https://api-ccte.epa.gov/docs/chemical.html} for details.
-#' @param api_key Character. Your CompTox Dashboard API key.
-#' @param chem_id_cols <[`tidy-select`][dplyr::dplyr_tidy_select]> Column(s)
-#'   in \code{input_data} that contain chemical identifiers. Required when
-#'   \code{input_data} is a data frame; ignored for vector input.
-#' @param batch Logical. If \code{TRUE} (default) identifiers are sent in
-#'   batches via \code{POST} for efficiency. If \code{FALSE} each identifier
-#'   is queried individually via \code{GET}.
-#' @param chunk_size Positive integer. Maximum number of identifiers per
-#'   \code{POST} batch request. Default is \code{200}.
-#' @param rate_limit Non-negative numeric. Seconds to pause between API
-#'   requests \emph{per worker}. Default is \code{0}. When parallel execution
-#'   is active (via a \code{future} plan with multiple workers), each worker
-#'   sleeps independently after its own request; to enforce a strict global
-#'   rate, either scale \code{rate_limit} proportionally to the number of
-#'   workers or set \code{future::plan(future::sequential)} before calling
-#'   this function.
-#' @param sorted Logical. If \code{TRUE} (default) output rows are returned in
-#'   the same order as the (deduplicated) input identifiers.
-#' @param retry_no_hits Logical. Applies only when \code{batch = TRUE}. If
-#'   \code{TRUE} (default), identifiers are retried via an individual
-#'   \code{GET} request in two situations: (1) the identifier was completely
-#'   absent from the \code{POST} response (the batch endpoint sometimes
-#'   silently drops unmatched inputs), or (2) the identifier was present in
-#'   the \code{POST} response with no chemical match \emph{and} no
-#'   \code{suggestions} — cases where a \code{GET} call may return a match or
-#'   at least surface candidate names. Identifiers that the \code{POST}
-#'   already returned with \code{suggestions} are \emph{not} retried, as
-#'   doing so risks overwriting useful API-provided candidates with a less
-#'   informative \code{GET} result.
+#' @param search_type Character. Matching strategy: `"equal_to"` (default),
+#'   `"starts_with"` or `"contains"`.
+#' @param api_key Character. Your CTX API key. Defaults to the `CTX_API_KEY`
+#'   environment variable.
+#' @param chem_id_cols <[`tidy-select`][dplyr::dplyr_tidy_select]> Column(s) of
+#'   `input_data` holding identifiers. Required when `input_data` is a data
+#'   frame; ignored for vector input.
+#' @param batch Logical. If `TRUE` (default) identifiers are sent in batches
+#'   via `POST`; if `FALSE` each identifier is a separate `GET` request.
+#' @param chunk_size Positive whole number. Maximum identifiers per `POST`
+#'   request. Default is `200`.
+#' @param rate_limit Non-negative number. Minimum seconds between requests,
+#'   applied globally across all concurrent requests. Default is `0` (no
+#'   throttling).
+#' @param sorted Logical. If `TRUE` (default) rows are returned in the order of
+#'   the (de-duplicated) input identifiers.
+#' @param retry_no_hits Logical. Only used when `batch = TRUE`. If `TRUE`
+#'   (default) identifiers absent from the `POST` response, or returned with no
+#'   match and no suggestions, are retried with `GET`.
+#' @param max_active Positive whole number. Maximum concurrent requests.
+#'   Default is `5`.
+#' @param progress Logical or string. Show a progress bar (a string names the
+#'   bar). Default is `interactive()`.
 #'
-#' @return A [tibble][tibble::tibble] with columns \code{input_term},
-#'   \code{dtxsid}, \code{dtxcid}, \code{casrn}, \code{preferredName},
-#'   \code{smiles}, \code{isMarkush}, \code{hasStructureImage},
-#'   \code{searchName}, \code{searchValue}, \code{rank}, and
-#'   \code{suggestions}. The \code{suggestions} column is \code{NA} for
-#'   matched chemicals; for unmatched identifiers it contains a
-#'   \code{" | "}-separated string of candidate names returned by the API
-#'   that can be passed back to \code{comptox_chem_search()} for re-querying.
-#'   Identifiers for which the API returns no information (empty response or
-#'   HTTP error) appear as a row of blank (\code{NA}) fields so that every
-#'   input identifier is always represented in the output.
-#'   Returns an empty tibble when \code{input_data} contains no usable
-#'   identifiers.
+#' @returns A tibble with one or more rows per input identifier and columns
+#'   `input_term`, `dtxsid`, `dtxcid`, `casrn`, `preferredName`, `smiles`,
+#'   `isMarkush`, `hasStructureImage`, `searchName`, `searchValue`, `rank`,
+#'   `suggestions` and `search_status`. `suggestions` holds a `" | "`-separated
+#'   string of candidate names for unmatched identifiers. `search_status` is
+#'   `"found"`, `"not_found"` (the API answered but found nothing) or
+#'   `"error"` (the request failed after retries); identifiers with status
+#'   `"error"` should be searched again rather than treated as absent from
+#'   CompTox. Every input identifier appears in the output. An empty tibble
+#'   with these columns is returned when there are no usable identifiers.
 #'
 #' @export
-#' @importFrom dplyr distinct pick everything pull mutate select filter
-#'   bind_rows bind_cols arrange any_of all_of where
-#' @importFrom tidyr pivot_longer drop_na
-#' @importFrom purrr list_rbind safely map map2 map_chr map_lgl
-#' @importFrom furrr future_map
-#' @importFrom progressr progressor
-#' @importFrom httr GET POST add_headers content stop_for_status
-#' @importFrom jsonlite fromJSON
-#' @importFrom utils URLencode
-#' @importFrom stringr str_squish str_c str_ends
-#' @importFrom tibble tibble as_tibble
-#' @importFrom glue glue
-#' @importFrom rlang abort warn inform %||%
 #'
 #' @examples
 #' \dontrun{
 #' df <- tibble::tibble(
-#'   chem_name = c("1-Chloro-4-nitrobenzene", "4-Nitrobenzenamine", "4-Nitrophenol"),
-#'   casrn     = c("100-00-5", "100-01-6", "100-02-7")
+#'   chem_name = c("1-Chloro-4-nitrobenzene", "4-Nitrobenzenamine"),
+#'   casrn = c("100-00-5", "100-01-6")
 #' )
 #'
-#' # Single-column search using batch POST (default)
-#' results <- comptox_chem_search(
-#'   input_data   = df,
-#'   search_type  = "equal_to",
-#'   api_key      = "your_api_key_here",
-#'   chem_id_cols = chem_name
-#' )
+#' # Search both identifier columns (API key read from CTX_API_KEY)
+#' results <- comptox_chem_search(df, chem_id_cols = c(chem_name, casrn))
 #'
-#' # Multi-column search (all unique IDs across both columns are searched)
-#' results <- comptox_chem_search(
-#'   input_data   = df,
-#'   search_type  = "equal_to",
-#'   api_key      = "your_api_key_here",
-#'   chem_id_cols = c(chem_name, casrn)
-#' )
-#'
-#' # Character vector input, individual GET requests, with a progress bar
-#' results <- progressr::with_progress({
-#'   comptox_chem_search(
-#'     input_data = c("100-00-5", "100-01-6"),
-#'     api_key    = "your_api_key_here",
-#'     batch      = FALSE
-#'   )
-#' })
+#' # Character vector, individual GET requests
+#' results <- comptox_chem_search(c("100-00-5", "100-01-6"), batch = FALSE)
 #' }
 comptox_chem_search <- function(
     input_data,
     search_type   = "equal_to",
-    api_key,
+    api_key       = Sys.getenv("CTX_API_KEY"),
     chem_id_cols,
     batch         = TRUE,
     chunk_size    = 200L,
     rate_limit    = 0,
     sorted        = TRUE,
-    retry_no_hits = TRUE
+    retry_no_hits = TRUE,
+    max_active    = 5L,
+    progress      = interactive()
 ) {
 
-  ## Input validation ---------------------------------------------------------
+  ## Input validation ----
 
-  if (missing(api_key)) rlang::abort("Please provide your API key via `api_key`.")
+  check_api_key(api_key)
 
-  if (!is.data.frame(input_data) && !is.character(input_data))
-    rlang::abort("`input_data` must be a data frame/tibble or a character vector.")
+  if (!is.data.frame(input_data) && !is.character(input_data)) {
+    cli::cli_abort(
+      "{.arg input_data} must be a data frame or a character vector, not {.cls {class(input_data)}}."
+    )
+  }
+
+  if (is.data.frame(input_data) && missing(chem_id_cols)) {
+    cli::cli_abort("{.arg chem_id_cols} is required when {.arg input_data} is a data frame.")
+  }
 
   search_type <- match.arg(
     tolower(search_type),
     choices = c("equal_to", "starts_with", "contains")
   )
+  chunk_size <- check_count(chunk_size)
+  max_active <- check_count(max_active)
+  rate_limit <- check_rate_limit(rate_limit)
 
-  if (!is.numeric(rate_limit) || length(rate_limit) != 1L || rate_limit < 0) {
-    rlang::warn("`rate_limit` must be a non-negative number; setting to 0.")
-    rate_limit <- 0
+  ## Extract and sanitise unique identifiers ----
+
+  # Sanitised here so that `chem_ids` and the API's `searchValue` refer to
+  # the same strings
+  chem_ids <- extract_chem_ids(input_data, {{ chem_id_cols }})
+
+  if (!length(chem_ids)) {
+    return(.comptox_na_template[0, ])
   }
 
-  if (!is.numeric(chunk_size) || length(chunk_size) != 1L)
-    rlang::abort("`chunk_size` must be a single positive integer.")
-  chunk_size <- as.integer(chunk_size)
-  if (is.na(chunk_size) || chunk_size < 1L)
-    rlang::abort("`chunk_size` must be a positive integer.")
+  ## API set-up ----
 
-  ## API setup ----------------------------------------------------------------
-
-  base_url <- "https://comptox.epa.gov/ctx-api"
-
-  url_path <- switch(
-    search_type,
-    equal_to    = "/chemical/search/equal/",
-    starts_with = "/chemical/search/start-with/",
-    contains    = "/chemical/search/contain/"
-  )
-
-  api_headers <- httr::add_headers(
-    "x-api-key"    = api_key,
-    "Content-Type" = "application/json",
-    "Accept"       = "application/json"
-  )
-
-  ## Internal helpers ---------------------------------------------------------
-
-  # Parse an httr response body into a tibble with standardised columns.
-  # Two sources of type-mismatch can cause dplyr::bind_rows() to fail when
-  # combining POST and GET results:
-  #   1. A column is entirely absent from the response — added as a typed NA.
-  #   2. A column is present in the JSON but all values are null — jsonlite
-  #      parses these as logical NA, conflicting with character from other calls.
-  # Both cases are handled below.
-  parse_resp <- function(resp) {
-    out <- httr::content(resp, as = "text", encoding = "UTF-8") |>
-      jsonlite::fromJSON(flatten = TRUE) |>
-      tibble::as_tibble()
-    # If the API returned suggestions as a list-column, collapse each row's
-    # candidates to a single " | "-separated string for easier downstream use.
-    if ("suggestions" %in% names(out) && is.list(out[["suggestions"]])) {
-      out <- dplyr::mutate(
-        out,
-        suggestions = purrr::map_chr(
-          suggestions,
-          \(x) if (length(x) == 0 || all(is.na(x))) NA_character_
-                else stringr::str_c(x, collapse = " | ")
-        )
-      )
-    }
-    # Case 1: add typed NAs for columns completely absent from the response.
-    missing_cols <- setdiff(.comptox_output_cols, names(out))
-    if (length(missing_cols))
-      out <- dplyr::bind_cols(out, dplyr::select(.na_template, dplyr::all_of(missing_cols)))
-    # Case 2: coerce expected columns that came back as all-null (logical) in
-    # the JSON to their correct types, so bind_rows() types are consistent.
-    dplyr::mutate(
-      out,
-      dplyr::across(
-        dplyr::any_of(.comptox_char_output_cols) & where(is.logical),
-        as.character
-      ),
-      dplyr::across(
-        dplyr::any_of(.comptox_integer_output_cols) & where(is.logical),
-        as.integer
-      )
+  search_url <- stringr::str_c(
+    .comptox_base_url,
+    switch(
+      search_type,
+      equal_to    = "/chemical/search/equal/",
+      starts_with = "/chemical/search/start-with/",
+      contains    = "/chemical/search/contain/"
     )
+  )
+
+  # Shared settings for both request types; the key is redacted when a
+  # request is printed
+  comptox_request <- function(url) {
+    req <- build_request(url) |>
+      httr2::req_headers(
+        `x-api-key` = api_key,
+        Accept      = "application/json",
+        .redact     = "x-api-key"
+      )
+
+    return(req)
   }
 
-  # Build a one-row tibble of typed NAs for a given identifier. Used when the
-  # API returns an HTTP error or an empty response so the identifier is never
-  # silently dropped from the result.
-  na_row <- function(id) dplyr::mutate(.na_template, input_term = id)
+  ## Search ----
 
-  # GET a single identifier. Returns list(result, error); error is non-NULL
-  # on HTTP errors or parsing failures. HTTP status is checked before parsing
-  # so that 4xx/5xx responses are caught rather than silently parsed.
-  safe_get_one <- purrr::safely(
-    \(id) {
-      resp <- httr::GET(
-        url    = paste0(base_url, url_path, utils::URLencode(id, reserved = TRUE)),
-        config = api_headers
-      )
-      httr::stop_for_status(resp)
-      result <- parse_resp(resp) |>
-        dplyr::mutate(input_term = id) |>
-        dplyr::select(dplyr::any_of(.comptox_output_cols))
-      # API returned an empty array — identifier not found and no suggestions
-      # provided. Substitute a blank NA row so the identifier is not absent
-      # from the final result.
-      if (nrow(result) == 0L) na_row(id) else result
-    }
-  )
-
-  # POST a batch of identifiers. Returns list(result, error); error is
-  # non-NULL on HTTP errors or parsing failures.
-  # The API's `searchValue` field identifies which result belongs to which
-  # input, and is used as `input_term` rather than positional matching.
-  safe_post_chunk <- purrr::safely(
-    \(ids_vec) {
-      resp <- httr::POST(
-        url    = paste0(base_url, url_path),
-        config = api_headers,
-        body   = paste(ids_vec, collapse = "\n"),
-        encode = "raw"
-      )
-      httr::stop_for_status(resp)
-      parse_resp(resp) |>
-        dplyr::mutate(input_term = .data$searchValue) |>
-        dplyr::select(dplyr::any_of(.comptox_output_cols))
-    }
-  )
-
-  # Helper: run safe_get_one over a vector of IDs, warn on failures, and
-  # return the combined tibble of successful results.
-  # `p` is a progressor created by the caller (not here) so that
-  # progressr::progressor() is always called directly inside
-  # comptox_chem_search() — the function wrapped by with_progress() — rather
-  # than inside this nested helper.  Calling progressor() from a nested
-  # function prevents it from finding the with_progress() context on the call
-  # stack, producing "no binding for '...progressor'".
-  run_get <- function(ids, p) {
-    raw <- furrr::future_map(
-      ids,
-      \(id) { p(); out <- safe_get_one(id); Sys.sleep(rate_limit); out }
+  if (!batch) {
+    results <- comptox_get_ids(
+      chem_ids,
+      search_url      = search_url,
+      comptox_request = comptox_request,
+      rate_limit      = rate_limit,
+      max_active      = max_active,
+      progress        = progress
     )
-    n_err <- sum(purrr::map_lgl(raw, \(x) !is.null(x$error)))
-    if (n_err > 0)
-      rlang::warn(glue::glue(
-        "{n_err} GET request(s) failed; a blank row will be returned for each affected identifier."
-      ))
-    # For HTTP/parsing errors substitute a blank NA row so every identifier
-    # appears in the result and is sorted correctly. Empty-array responses
-    # (identifier not found, no suggestions) are already converted to NA rows
-    # inside safe_get_one before safely() captures them.
-    purrr::map2(raw, ids, \(x, id) x$result %||% na_row(id)) |>
-      purrr::list_rbind()
-  }
-
-  ## Extract and sanitize unique identifiers ----------------------------------
-
-  # Sanitisation is done here so that `chem_ids` and `searchValue` from
-  # the API always refer to the same strings, enabling reliable matching.
-  chem_ids <- if (is.data.frame(input_data)) {
-    if (missing(chem_id_cols))
-      rlang::abort("`chem_id_cols` is required when `input_data` is a data frame.")
-    input_data |>
-      dplyr::distinct(dplyr::pick({{ chem_id_cols }})) |>
-      tidyr::pivot_longer(cols = dplyr::everything(), values_to = "chem_ids") |>
-      tidyr::drop_na(chem_ids) |>
-      dplyr::pull(.data$chem_ids)
   } else {
-    input_data[!is.na(input_data)]
-  }
-
-  chem_ids <- as.character(chem_ids) |>
-    stringr::str_squish() |>
-    unique()
-
-  if (!length(chem_ids)) return(tibble::tibble())
-
-  ## Search -------------------------------------------------------------------
-
-  results <- if (!batch) {
-
-    # --- Individual GET for every identifier --------------------------------
-    p <- progressr::progressor(along = chem_ids, message = "Retrieving data")
-    run_get(chem_ids, p)
-
-  } else {
-
-    # --- Batch POST with GET fallback ---------------------------------------
-    #
-    # The CompTox POST endpoint silently strips trailing hyphens from
-    # identifiers before searching, so chemicals whose names end with "-"
-    # return no results. Pre-route them to individual GET calls.
+    # The POST endpoint strips trailing hyphens before searching, so those
+    # identifiers go to individual GET requests
     trailing_hyphen <- stringr::str_ends(chem_ids, "-")
-    ids_for_get     <- chem_ids[trailing_hyphen]
-    ids_for_post    <- chem_ids[!trailing_hyphen]
+    ids_for_get <- chem_ids[trailing_hyphen]
+    ids_for_post <- chem_ids[!trailing_hyphen]
 
-    if (sum(trailing_hyphen) > 0)
-      rlang::inform(glue::glue(
-        "{sum(trailing_hyphen)} identifier(s) ending in \"-\" will be searched individually via GET."
-      ))
-
-    # Batch POST
-    post_results <- if (length(ids_for_post)) {
-      chunks   <- split(ids_for_post, ceiling(seq_along(ids_for_post) / chunk_size))
-      p        <- progressr::progressor(along = chunks, message = "Retrieving data (batch POST)")
-      raw_post <- furrr::future_map(
-        chunks,
-        \(chunk) { p(); out <- safe_post_chunk(chunk); Sys.sleep(rate_limit); out }
+    if (any(trailing_hyphen)) {
+      cli::cli_inform(
+        "{sum(trailing_hyphen)} identifier{?s} ending in {.val -} will be searched individually via GET."
       )
-      n_err <- sum(purrr::map_lgl(raw_post, \(x) !is.null(x$error)))
-      if (n_err > 0)
-        rlang::warn(glue::glue("{n_err} POST batch chunk(s) failed and were skipped."))
-      post <- purrr::map(raw_post, "result") |> purrr::list_rbind()
-      missing_cols <- setdiff(.comptox_output_cols, names(post))
-      if (length(missing_cols))
-        post <- dplyr::bind_cols(post, dplyr::select(.na_template, dplyr::all_of(missing_cols)))
-      post
-    } else {
-      dplyr::slice(.na_template, 0L)
     }
 
-    # Identify no-hit IDs from POST: rows with NA results AND IDs absent from
-    # the response entirely (in case the API omits rows for unmatched inputs).
+    post <- comptox_post_ids(
+      ids_for_post,
+      search_url      = search_url,
+      comptox_request = comptox_request,
+      chunk_size      = chunk_size,
+      rate_limit      = rate_limit,
+      max_active      = max_active,
+      progress        = progress
+    )
+    post_results <- post$results
+
+    # Retry identifiers that the batch endpoint dropped, failed on, or
+    # answered with no match and no suggestions. Identifiers that already
+    # have suggestions are not retried: a GET could overwrite them with a
+    # less informative answer.
     if (retry_no_hits && length(ids_for_post)) {
-      # Only retry POST no-hits that also lack suggestions. If the POST
-      # result already has suggestions the user can act on those directly;
-      # retrying via GET risks replacing them with a less informative result.
-      na_hit_ids  <- if (nrow(post_results) > 0) {
-        post_results |>
-          dplyr::filter(
-            is.na(.data$dtxsid) & is.na(.data$smiles) & is.na(.data$suggestions)
-          ) |>
-          dplyr::pull(.data$input_term) |>
-          unique()
-      } else {
-        character(0)
-      }
-      missing_ids   <- setdiff(ids_for_post, post_results$input_term)
-      extra_no_hits <- unique(c(na_hit_ids, missing_ids))
+      empty_ids <- post_results |>
+        dplyr::filter(
+          is.na(.data$dtxsid),
+          is.na(.data$smiles),
+          is.na(.data$suggestions)
+        ) |>
+        dplyr::pull("input_term")
+      missing_ids <- setdiff(ids_for_post, post_results$input_term)
+      retry_ids <- unique(c(empty_ids, missing_ids))
 
-      if (length(extra_no_hits)) {
-        rlang::inform(glue::glue(
-          "Retrying {length(extra_no_hits)} identifier(s) with no batch results via individual GET."
-        ))
-        ids_for_get  <- unique(c(ids_for_get, extra_no_hits))
-        post_results <- dplyr::filter(post_results, !.data$input_term %in% extra_no_hits)
+      if (length(retry_ids)) {
+        cli::cli_inform(
+          "Retrying {length(retry_ids)} identifier{?s} with no batch result via individual GET."
+        )
+        ids_for_get <- unique(c(ids_for_get, retry_ids))
+        post_results <- dplyr::filter(post_results, !.data$input_term %in% retry_ids)
       }
     }
 
-    # Individual GET for trailing-hyphen IDs and any retry candidates
-    get_results <- if (length(ids_for_get)) {
-      p_get <- progressr::progressor(along = ids_for_get, message = "Retrieving data (GET)")
-      run_get(ids_for_get, p_get)
-    } else {
-      tibble::tibble()
+    get_results <- comptox_get_ids(
+      ids_for_get,
+      search_url      = search_url,
+      comptox_request = comptox_request,
+      rate_limit      = rate_limit,
+      max_active      = max_active,
+      progress        = progress
+    )
+
+    results <- dplyr::bind_rows(post_results, get_results)
+
+    # Identifiers still absent (only possible with retry_no_hits = FALSE):
+    # "error" if their batch failed, otherwise "not_found"
+    absent_ids <- setdiff(chem_ids, results$input_term)
+
+    if (length(absent_ids)) {
+      absent_rows <- tibble::tibble(input_term = absent_ids) |>
+        dplyr::mutate(
+          search_status = dplyr::if_else(
+            .data$input_term %in% post$failed_ids,
+            "error",
+            "not_found"
+          )
+        )
+      results <- dplyr::bind_rows(
+        results,
+        fill_comptox_cols(absent_rows)
+      )
     }
-
-    dplyr::bind_rows(post_results, get_results)
   }
 
-  ## Sort output to match input order -----------------------------------------
+  ## Report failed requests ----
 
-  if (sorted && nrow(results) > 0) {
-    results <- results |>
-      dplyr::mutate(.row_order = match(.data$input_term, chem_ids)) |>
-      dplyr::arrange(.row_order) |>
-      dplyr::select(-.row_order)
+  n_error <- sum(results$search_status == "error")
+
+  if (n_error > 0) {
+    cli::cli_warn(c(
+      "{n_error} identifier{?s} could not be searched because the request failed.",
+      "i" = "These rows have {.code search_status == \"error\"}; search them again later."
+    ))
   }
 
-  results
+  ## Sort output to match input order ----
+
+  if (sorted) {
+    results <- dplyr::arrange(results, match(.data$input_term, chem_ids))
+  }
+
+  return(results)
 }
 
+# Add any missing output columns as typed NAs and put columns in schema order.
+# All-null JSON fields arrive as logical NA; these are coerced to the schema
+# type so that later bind_rows() calls see consistent types.
+fill_comptox_cols <- function(results) {
+  missing_cols <- setdiff(.comptox_output_cols, names(results))
 
-#' Collapse duplicate chemical search results into a single row per chemical
+  if (length(missing_cols)) {
+    results <- dplyr::bind_cols(
+      results,
+      .comptox_na_template[rep(1L, nrow(results)), missing_cols]
+    )
+  }
+
+  results <- results |>
+    dplyr::mutate(
+      dplyr::across(
+        dplyr::all_of(c("input_term", "dtxsid", "dtxcid", "casrn", "preferredName", "smiles",
+                        "searchName", "searchValue", "suggestions", "search_status")),
+        as.character
+      ),
+      dplyr::across(dplyr::all_of(c("isMarkush", "hasStructureImage")), as.logical),
+      rank = as.integer(.data$rank)
+    ) |>
+    dplyr::select(dplyr::all_of(.comptox_output_cols))
+
+  return(results)
+}
+
+# Parse a CompTox search response into the output schema. Suggestions arrive
+# as a list-column and are collapsed to one " | "-separated string per row.
+parse_comptox_search <- function(resp) {
+  parsed <- resp_json(resp)
+
+  if (is.null(parsed) || !length(parsed)) {
+    return(.comptox_na_template[0, ])
+  }
+
+  results <- tibble::as_tibble(parsed)
+
+  if ("suggestions" %in% names(results) && is.list(results$suggestions)) {
+    results <- dplyr::mutate(
+      results,
+      suggestions = purrr::map_chr(
+        .data$suggestions,
+        \(candidates) {
+          candidates <- unlist(candidates)
+          if (!length(candidates) || all(is.na(candidates))) {
+            return(NA_character_)
+          }
+          return(stringr::str_c(candidates, collapse = " | "))
+        }
+      )
+    )
+  }
+
+  results <- results |>
+    dplyr::mutate(search_status = NA_character_) |>
+    fill_comptox_cols() |>
+    dplyr::mutate(
+      search_status = dplyr::if_else(!is.na(.data$dtxsid), "found", "not_found")
+    )
+
+  return(results)
+}
+
+# Search identifiers one at a time with GET. Every identifier gets at least
+# one row: a parsed result, or an NA row with status "not_found" / "error".
+comptox_get_ids <- function(
+    ids,
+    search_url,
+    comptox_request,
+    rate_limit,
+    max_active,
+    progress
+) {
+  if (!length(ids)) {
+    return(.comptox_na_template[0, ])
+  }
+
+  reqs <- purrr::map(
+    ids,
+    \(chem_id) {
+      comptox_request(stringr::str_c(search_url, utils::URLencode(chem_id, reserved = TRUE)))
+    }
+  )
+
+  resps <- perform_requests(
+    reqs,
+    rate_limit = rate_limit,
+    max_active = max_active,
+    progress   = if (isTRUE(progress)) "CompTox: GET" else progress
+  )
+
+  results <- purrr::map2(
+    resps,
+    ids,
+    \(resp, chem_id) {
+      outcome <- resp_outcome(resp)
+
+      if (outcome == "ok") {
+        parsed <- parse_comptox_search(resp)
+        if (nrow(parsed)) {
+          return(dplyr::mutate(parsed, input_term = chem_id))
+        }
+        outcome <- "not_found"
+      }
+
+      na_row <- dplyr::mutate(
+        .comptox_na_template,
+        input_term = chem_id,
+        search_status = outcome
+      )
+
+      return(na_row)
+    }
+  ) |>
+    purrr::list_rbind()
+
+  return(results)
+}
+
+# Search identifiers in POST batches. Returns a list with the parsed `results`
+# and the `failed_ids` whose batch request failed.
+comptox_post_ids <- function(
+    ids,
+    search_url,
+    comptox_request,
+    chunk_size,
+    rate_limit,
+    max_active,
+    progress
+) {
+  if (!length(ids)) {
+    return(list(results = .comptox_na_template[0, ], failed_ids = character()))
+  }
+
+  chunks <- chunk_vector(ids, chunk_size)
+
+  reqs <- purrr::map(
+    chunks,
+    \(chunk) {
+      req <- comptox_request(search_url) |>
+        httr2::req_body_raw(stringr::str_c(chunk, collapse = "\n"), type = "application/json")
+      return(req)
+    }
+  )
+
+  resps <- perform_requests(
+    reqs,
+    rate_limit = rate_limit,
+    max_active = max_active,
+    progress   = if (isTRUE(progress)) "CompTox: batch POST" else progress
+  )
+
+  outcomes <- purrr::map_chr(resps, resp_outcome)
+  failed_ids <- unlist(chunks[outcomes != "ok"], use.names = FALSE)
+
+  if (any(outcomes != "ok")) {
+    cli::cli_warn(
+      "{sum(outcomes != 'ok')} batch POST request{?s} failed ({length(failed_ids)} identifier{?s})."
+    )
+  }
+
+  results <- resps[outcomes == "ok"] |>
+    purrr::map(parse_comptox_search) |>
+    purrr::list_rbind()
+
+  if (!nrow(results)) {
+    return(list(results = .comptox_na_template[0, ], failed_ids = failed_ids))
+  }
+
+  # The API's searchValue says which input each result belongs to. Match it
+  # case-insensitively in case the API normalises letter case; results that
+  # match no input are dropped (their input is then retried or reported).
+  results <- results |>
+    dplyr::mutate(
+      input_term = ids[match(toupper(.data$searchValue), toupper(ids))]
+    ) |>
+    dplyr::filter(!is.na(.data$input_term))
+
+  return(list(results = results, failed_ids = failed_ids))
+}
+
+#' Collapse duplicate chemical search results into one row per chemical
 #'
-#' When \code{\link{comptox_chem_search}} is called with multiple identifier
-#' columns (e.g. chemical name \emph{and} CAS-RN), different \code{input_term}
-#' values can resolve to the same chemical. This function collapses those
-#' duplicate rows into a single row per unique chemical, merging their
-#' \code{input_term} values into one string separated by \code{collapse_sep}.
+#' When [comptox_chem_search()] is called with several identifier columns
+#' (e.g. chemical name *and* CASRN), different `input_term` values can resolve
+#' to the same chemical. This function collapses those rows into one row per
+#' chemical, joining their `input_term` values with `collapse_sep`.
 #'
-#' When \code{input_data} is supplied the function also joins the non-identifier
-#' columns from the original data back onto the results, so the returned tibble
-#' combines both the CompTox chemical information and the user's own data.
-#' Deduplication is then performed \emph{within} each original input row (i.e.
-#' only identifier columns from the same row that resolve to the same chemical
-#' are collapsed), keeping rows that belong to different input rows separate.
+#' When `input_data` is supplied, its non-identifier columns are joined back
+#' onto the results and de-duplication happens *within* each original input
+#' row, so rows from different inputs are never merged. The collapsed
+#' `input_term` then follows the order of `chem_id_cols`. Without
+#' `input_data`, terms containing a letter (names) come before purely numeric
+#' or symbolic terms (CASRNs), alphabetically within each group.
 #'
-#' The collapsed \code{input_term} string respects the order in which columns
-#' were listed in \code{chem_id_cols}: if the first column contains chemical
-#' names, the name will always appear first in the collapsed string. When
-#' \code{input_data} is not supplied, terms containing at least one letter
-#' (e.g. chemical names) are placed before purely numeric or symbolic
-#' identifiers (e.g. CAS-RNs), with alphabetical ordering within each group.
+#' Rows whose `by` value is `NA` (no chemical matched) are not collapsed;
+#' they are returned unchanged in their input position.
 #'
-#' Rows whose value in the \code{by} column is \code{NA} (i.e. no chemical was
-#' matched) cannot be reliably attributed to a unique compound and are returned
-#' unchanged at the end of the tibble.
+#' @param results A tibble returned by [comptox_chem_search()].
+#' @param input_data Optional. The data frame or character vector passed to
+#'   [comptox_chem_search()].
+#' @param chem_id_cols <[`tidy-select`][dplyr::dplyr_tidy_select]> The column
+#'   selection passed to [comptox_chem_search()]. Required when `input_data` is
+#'   a data frame.
+#' @param by Character. Column used as the chemical key: `"dtxsid"` (default),
+#'   `"dtxcid"`, `"casrn"` or `"preferredName"`.
+#' @param collapse_sep Character. Separator between collapsed `input_term`
+#'   values. Default is `" | "`.
 #'
-#' @param results A tibble returned by \code{\link{comptox_chem_search}}.
-#' @param input_data Optional. The original data frame/tibble or character
-#'   vector passed to \code{\link{comptox_chem_search}}. When provided, its
-#'   non-identifier columns are joined onto the returned tibble and
-#'   deduplication is scoped to each original input row.
-#' @param chem_id_cols <[`tidy-select`][dplyr::dplyr_tidy_select]> The same
-#'   column selection passed to \code{\link{comptox_chem_search}}. Required
-#'   when \code{input_data} is a data frame; ignored otherwise.
-#' @param by Character. Column used as the chemical uniqueness key. One of
-#'   \code{"dtxsid"} (default), \code{"dtxcid"}, \code{"casrn"}, or
-#'   \code{"preferredName"}.
-#' @param collapse_sep Character. Separator inserted between \code{input_term}
-#'   values when multiple terms resolve to the same chemical.
-#'   Default is \code{" | "}.
-#'
-#' @return A tibble with one row per unique chemical (scoped per original input
-#'   row when \code{input_data} is provided), in the same order as the input.
-#'   The \code{input_term} column contains all matching search terms joined by
-#'   \code{collapse_sep}, ordered to match \code{chem_id_cols} when
-#'   \code{input_data} is provided, or with letter-containing terms first and
-#'   purely numeric/symbolic identifiers last when it is not. CompTox columns
-#'   retain the value from the first matching result; non-identifier columns
-#'   from \code{input_data} are appended when \code{input_data} is supplied.
-#'   Unmatched rows (NA in \code{by}) are returned as-is at the end of the
-#'   tibble.
+#' @returns A tibble with one row per chemical (per original input row when
+#'   `input_data` is a data frame), in input order. CompTox columns keep the
+#'   value of the first matching result; non-identifier columns of
+#'   `input_data` are appended when it is supplied. Unmatched rows are kept
+#'   uncollapsed.
 #'
 #' @export
-#' @importFrom dplyr group_by across all_of any_of summarise first arrange
-#'   relocate bind_rows select left_join mutate row_number
-#' @importFrom tidyr pivot_longer drop_na
-#' @importFrom stringr str_c str_detect
-#' @importFrom rlang abort
 #'
 #' @examples
 #' \dontrun{
 #' df <- tibble::tibble(
 #'   chem_name = c("1-Chloro-4-nitrobenzene", "Benzene"),
-#'   casrn     = c("100-00-5", "71-43-2"),
+#'   casrn = c("100-00-5", "71-43-2"),
 #'   conc_mg_l = c(0.5, 1.2)
 #' )
 #'
-#' results <- comptox_chem_search(
-#'   input_data   = df,
-#'   api_key      = "your_api_key_here",
-#'   chem_id_cols = c(chem_name, casrn)
-#' )
+#' results <- comptox_chem_search(df, chem_id_cols = c(chem_name, casrn))
 #'
-#' # Without input_data: collapse globally — one row per unique chemical.
-#' # input_term values are ordered alphabetically.
-#' deduped <- deduplicate_chem_results(results)
-#'
-#' # With input_data: join conc_mg_l back, collapse within each input row, and
-#' # order input_term values to match chem_id_cols (chemical name first).
-#' # Output row order matches the original df.
 #' deduped <- deduplicate_chem_results(
-#'   results      = results,
-#'   input_data   = df,
+#'   results,
+#'   input_data = df,
 #'   chem_id_cols = c(chem_name, casrn)
 #' )
 #' }
@@ -528,135 +526,119 @@ deduplicate_chem_results <- function(
     collapse_sep = " | "
 ) {
 
-  ## Input validation ---------------------------------------------------------
+  ## Input validation ----
 
-  if (!is.data.frame(results))
-    rlang::abort("`results` must be a data frame/tibble (the output of `comptox_chem_search`).")
+  if (!is.data.frame(results)) {
+    cli::cli_abort(
+      "{.arg results} must be a data frame (the output of {.fn comptox_chem_search})."
+    )
+  }
 
   by <- match.arg(by, c("dtxsid", "dtxcid", "casrn", "preferredName"))
 
-  if (!by %in% names(results))
-    rlang::abort(
-      paste0("`", by, "` column not found in `results`. ",
-             "Ensure `results` is the output of `comptox_chem_search`.")
+  if (!by %in% names(results)) {
+    cli::cli_abort(
+      "Column {.val {by}} not found in {.arg results}; is it the output of {.fn comptox_chem_search}?"
     )
+  }
 
-  if (!nrow(results)) return(results)
+  if (!nrow(results)) {
+    return(results)
+  }
 
-  # `.result_row` preserves the original row order of `results` so that the
-  # final output can always be sorted back to match the input, regardless of
-  # whether `input_data` is supplied.
+  # `.result_row` keeps the original order of `results` for the final sort
   results <- dplyr::mutate(results, .result_row = dplyr::row_number())
 
-  # Grouping variables and whether .col_order is available for input_term
-  # ordering; both are updated below when input_data is a data frame.
-  group_vars    <- by
+  group_vars <- by
   has_col_order <- FALSE
 
-  ## Optionally join non-identifier columns from the original input data ------
+  ## Optionally join non-identifier columns from the original input ----
 
   if (!missing(input_data) && !is.null(input_data)) {
 
     if (is.data.frame(input_data)) {
 
-      if (missing(chem_id_cols))
-        rlang::abort("`chem_id_cols` is required when `input_data` is a data frame.")
+      if (missing(chem_id_cols)) {
+        cli::cli_abort("{.arg chem_id_cols} is required when {.arg input_data} is a data frame.")
+      }
 
-      # Capture the names of the identifier columns in the order the user
-      # specified them — this order controls which term appears first in the
-      # collapsed input_term string.
+      # Identifier columns in the order given; this order sets which term
+      # comes first in the collapsed input_term string
       id_col_names <- names(dplyr::select(input_data, {{ chem_id_cols }}))
 
-      # Build a long lookup table:
-      #   - one row per (original input row × identifier value)
-      #   - `.col_order` records the position of each column in chem_id_cols
-      #     so the first column listed (typically the chemical name) sorts first
-      #   - pivoting the identifier columns away leaves only non-identifier
-      #     data columns alongside the three helper columns
+      # One row per (original input row x identifier value). Values are
+      # squished exactly as comptox_chem_search() squishes them, otherwise
+      # identifiers with stray spaces never join back to their results.
       lookup <- input_data |>
-        dplyr::mutate(.orig_row = dplyr::row_number()) |>
+        dplyr::mutate(
+          .orig_row = dplyr::row_number(),
+          dplyr::across(dplyr::all_of(id_col_names), as.character)
+        ) |>
         tidyr::pivot_longer(
           cols      = dplyr::all_of(id_col_names),
           names_to  = ".id_col",
           values_to = "input_term"
         ) |>
         dplyr::mutate(
-          input_term = as.character(.data$input_term),
+          input_term = stringr::str_squish(.data$input_term),
           .col_order = match(.data$.id_col, id_col_names)
         ) |>
-        tidyr::drop_na(input_term) |>
+        dplyr::filter(!is.na(.data$input_term), nzchar(.data$input_term)) |>
         dplyr::select(-".id_col")
 
-      # Join non-identifier columns and the helper columns onto each result row.
-      # suffix = c("", ".orig") disambiguates column names that exist in both
-      # `results` and the non-identifier portion of `input_data`.
       results <- dplyr::left_join(
         results,
         lookup,
-        by     = "input_term",
-        suffix = c("", ".orig")
+        by = dplyr::join_by("input_term"),
+        suffix = c("", ".orig"),
+        relationship = "many-to-many"
       )
 
-      # Scope deduplication to each original input row so that rows from
-      # different inputs are never collapsed into one another, and enable
-      # chem_id_cols-order sorting of the collapsed input_term string.
-      group_vars    <- c(".orig_row", by)
+      group_vars <- c(".orig_row", by)
       has_col_order <- TRUE
 
     } else if (!is.atomic(input_data)) {
-      rlang::abort("`input_data` must be a data frame/tibble or an atomic vector.")
+      cli::cli_abort("{.arg input_data} must be a data frame or an atomic vector.")
     }
-    # Atomic vector: no extra columns to join; fall through to global dedup
   }
 
-  ## Split on whether the key column is populated -----------------------------
+  ## Split on whether the key column is populated ----
 
-  keyed   <- dplyr::filter(results, !is.na(.data[[by]]))
-  unkeyed <- dplyr::filter(results,  is.na(.data[[by]]))
+  keyed <- dplyr::filter(results, !is.na(.data[[by]]))
+  unkeyed <- dplyr::filter(results, is.na(.data[[by]]))
 
-  ## Collapse duplicate rows --------------------------------------------------
+  ## Collapse duplicate rows ----
 
-  # Helper columns that must be excluded from the across() call below.
-  # .col_order and .result_row are not grouping vars so dplyr will not
-  # exclude them automatically; they must be listed explicitly.
+  # Helper columns that must not be summarised with first()
   helper_cols <- c(".col_order", ".result_row")
 
   if (nrow(keyed)) {
     keyed <- keyed |>
-      dplyr::group_by(dplyr::across(dplyr::all_of(group_vars))) |>
       dplyr::summarise(
-        # Order input terms by their source column's position in chem_id_cols
-        # (so the chemical name column always comes first), then remove any
-        # duplicate terms while preserving that order.
-        # Falls back to alphabetic-first ordering when .col_order is unavailable:
-        # terms containing at least one letter (e.g. chemical names) sort before
-        # purely numeric/symbolic identifiers (e.g. CAS-RNs); alphabetical order
-        # is used as a tiebreaker within each group.
-        input_term  = {
-          ord <- if (has_col_order) order(.col_order)
-                 else order(!stringr::str_detect(input_term, "[A-Za-z]"), input_term)
-          t   <- input_term[ord]
-          stringr::str_c(t[!duplicated(t)], collapse = collapse_sep)
+        # Order terms by source column (or letters-first), then drop repeats
+        input_term = {
+          term_order <- if (has_col_order) {
+            order(.data$.col_order)
+          } else {
+            order(!stringr::str_detect(.data$input_term, "[A-Za-z]"), .data$input_term)
+          }
+          terms <- .data$input_term[term_order]
+          stringr::str_c(unique(terms), collapse = collapse_sep)
         },
-        # Carry forward the earliest result row index for sorting later
-        .result_row = min(.result_row),
-        # All other non-grouping columns take the value from the first
-        # occurrence. Grouping variables and the explicit helper cols are
-        # excluded; dplyr handles the grouping vars automatically.
+        .result_row = min(.data$.result_row),
         dplyr::across(!dplyr::any_of(c("input_term", helper_cols)), dplyr::first),
-        .groups     = "drop"
+        .by = dplyr::all_of(group_vars)
       ) |>
-      dplyr::relocate(input_term)
+      dplyr::relocate("input_term")
   }
 
-  ## Restore input order and drop all internal helper columns -----------------
+  ## Restore input order and drop helper columns ----
 
-  # `has_col_order` is TRUE if and only if `.orig_row` was added (i.e. when
-  # input_data is a data frame), so it is the correct signal for which sort
-  # column to use.
   sort_col <- if (has_col_order) ".orig_row" else ".result_row"
 
-  dplyr::bind_rows(keyed, unkeyed) |>
-    dplyr::arrange(dplyr::across(dplyr::all_of(sort_col))) |>
+  deduped <- dplyr::bind_rows(keyed, unkeyed) |>
+    dplyr::arrange(.data[[sort_col]]) |>
     dplyr::select(-dplyr::any_of(c(".orig_row", ".result_row", ".col_order")))
+
+  return(deduped)
 }
